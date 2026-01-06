@@ -1,34 +1,14 @@
 # app.py
 from __future__ import annotations
 
-import csv
 import io
+import json
 import os
-import threading
-from dataclasses import dataclass
-from typing import List
+from typing import List, Dict
 
-from flask import Flask, Response, redirect, render_template_string, request, url_for
-
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.units import mm
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.cidfonts import UnicodeCIDFont
-from reportlab.pdfgen import canvas
+from flask import Flask, Response, render_template_string, request
 
 app = Flask(__name__)
-
-LOCK = threading.Lock()
-
-
-@dataclass
-class CardItem:
-    word: str
-    meaning: str
-
-
-ITEMS: List[CardItem] = []
-
 
 HTML = r"""
 <!doctype html>
@@ -48,7 +28,6 @@ HTML = r"""
     button,.btn{appearance:none;border:0;border-radius:10px;padding:10px 14px;font-size:14px;cursor:pointer;text-decoration:none;display:inline-block}
     button{background:#2563eb;color:#fff;}
     .btn{background:#111827;color:#fff;}
-    .btn2{background:#10b981;color:#fff;}
     .row{display:flex;gap:10px;flex-wrap:wrap}
     table{width:100%;border-collapse:collapse;}
     th,td{padding:10px 8px;border-bottom:1px solid #edf0f6;font-size:14px;vertical-align:top}
@@ -63,27 +42,27 @@ HTML = r"""
     <div class="topbar">
       <h1>単語帳</h1>
       <div class="row">
-        <a class="btn2" href="{{ url_for('export_csv') }}">CSV</a>
-        <a class="btn" href="{{ url_for('export_pdf') }}">PDF</a>
-        <a class="btn" style="background:#6b7280" href="{{ url_for('clear_all') }}">全消去</a>
+        <button class="btn" id="btnCsv" type="button">CSV</button>
+        <button class="btn" id="btnPdf" type="button">PDF</button>
+        <button class="btn" id="btnClear" type="button" style="background:#6b7280">全消去</button>
       </div>
     </div>
 
     <div class="card">
-      <form method="post" action="{{ url_for('add_item') }}">
+      <form id="addForm">
         <div>
           <label>英単語</label>
-          <input name="word" autocomplete="off" required maxlength="80" />
+          <input id="word" autocomplete="off" required maxlength="80" />
         </div>
         <div>
           <label>日本語の意味</label>
-          <input name="meaning" autocomplete="off" required maxlength="200" />
+          <input id="meaning" autocomplete="off" required maxlength="200" />
         </div>
         <div>
           <button type="submit">記録</button>
         </div>
       </form>
-      <div class="muted">入力して「記録」を押すと下のリストに追加されます。</div>
+      <div class="muted">データはこのブラウザ内に保存されます（サーバーには保存しません）。</div>
     </div>
 
     <div class="card">
@@ -95,83 +74,157 @@ HTML = r"""
             <th style="width:90px">操作</th>
           </tr>
         </thead>
-        <tbody>
-          {% if items %}
-            {% for i, it in items %}
-              <tr>
-                <td>{{ it.word }}</td>
-                <td>{{ it.meaning }}</td>
-                <td>
-                  <form method="post" action="{{ url_for('delete_item', idx=i) }}" style="margin:0">
-                    <button class="del" type="submit">削除</button>
-                  </form>
-                </td>
-              </tr>
-            {% endfor %}
-          {% else %}
-            <tr><td colspan="3" style="color:#6b7280;padding:16px 8px">まだありません。</td></tr>
-          {% endif %}
+        <tbody id="tbody">
+          <tr><td colspan="3" style="color:#6b7280;padding:16px 8px">まだありません。</td></tr>
         </tbody>
       </table>
     </div>
   </div>
+
+<script>
+(() => {
+  const KEY = "wordbook_items_v1";
+
+  const $ = (id) => document.getElementById(id);
+  const tbody = $("tbody");
+  const form = $("addForm");
+  const wordEl = $("word");
+  const meaningEl = $("meaning");
+  const btnCsv = $("btnCsv");
+  const btnPdf = $("btnPdf");
+  const btnClear = $("btnClear");
+
+  function loadItems() {
+    try {
+      const raw = localStorage.getItem(KEY);
+      if (!raw) return [];
+      const v = JSON.parse(raw);
+      if (!Array.isArray(v)) return [];
+      return v.filter(x => x && typeof x.word === "string" && typeof x.meaning === "string");
+    } catch {
+      return [];
+    }
+  }
+
+  function saveItems(items) {
+    localStorage.setItem(KEY, JSON.stringify(items));
+  }
+
+  function escapeHtml(s) {
+    return s.replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#39;");
+  }
+
+  function render() {
+    const items = loadItems();
+    if (items.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="3" style="color:#6b7280;padding:16px 8px">まだありません。</td></tr>';
+      return;
+    }
+    tbody.innerHTML = items.map((it, i) => `
+      <tr>
+        <td>${escapeHtml(it.word)}</td>
+        <td>${escapeHtml(it.meaning)}</td>
+        <td><button class="del" type="button" data-del="${i}">削除</button></td>
+      </tr>
+    `).join("");
+  }
+
+  form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const word = wordEl.value.trim();
+    const meaning = meaningEl.value.trim();
+    if (!word || !meaning) return;
+
+    const items = loadItems();
+    items.push({word, meaning});
+    saveItems(items);
+
+    wordEl.value = "";
+    meaningEl.value = "";
+    wordEl.focus();
+
+    render();
+  });
+
+  tbody.addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-del]");
+    if (!btn) return;
+    const idx = Number(btn.getAttribute("data-del"));
+    const items = loadItems();
+    if (Number.isInteger(idx) && idx >= 0 && idx < items.length) {
+      items.splice(idx, 1);
+      saveItems(items);
+      render();
+    }
+  });
+
+  btnClear.addEventListener("click", () => {
+    saveItems([]);
+    render();
+  });
+
+  btnCsv.addEventListener("click", () => {
+    const items = loadItems();
+    const bom = "\uFEFF";
+    const lines = ["word,meaning"].concat(
+      items.map(it => {
+        const w = String(it.word).replaceAll('"','""');
+        const m = String(it.meaning).replaceAll('"','""');
+        return `"${w}","${m}"`;
+      })
+    );
+    const csv = bom + lines.join("\r\n");
+    const blob = new Blob([csv], {type: "text/csv;charset=utf-8"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "wordbook.csv";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  });
+
+  btnPdf.addEventListener("click", async () => {
+    const items = loadItems();
+    const res = await fetch("/export.pdf", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({items})
+    });
+    if (!res.ok) {
+      alert("PDF出力に失敗しました");
+      return;
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "wordbook.pdf";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  });
+
+  render();
+})();
+</script>
 </body>
 </html>
 """
 
-
 @app.get("/")
 def index():
-    with LOCK:
-        items = list(enumerate(ITEMS))
-    return render_template_string(HTML, items=items)
+    return render_template_string(HTML)
 
+def _draw_pdf(rows: List[Dict[str, str]]) -> bytes:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import mm
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+    from reportlab.pdfgen import canvas
 
-@app.post("/add")
-def add_item():
-    word = (request.form.get("word") or "").strip()
-    meaning = (request.form.get("meaning") or "").strip()
-    if word and meaning:
-        with LOCK:
-            ITEMS.append(CardItem(word=word, meaning=meaning))
-    return redirect(url_for("index"))
-
-
-@app.post("/delete/<int:idx>")
-def delete_item(idx: int):
-    with LOCK:
-        if 0 <= idx < len(ITEMS):
-            ITEMS.pop(idx)
-    return redirect(url_for("index"))
-
-
-@app.get("/clear")
-def clear_all():
-    with LOCK:
-        ITEMS.clear()
-    return redirect(url_for("index"))
-
-
-@app.get("/export.csv")
-def export_csv():
-    with LOCK:
-        rows = [(it.word, it.meaning) for it in ITEMS]
-
-    buf = io.StringIO()
-    w = csv.writer(buf)
-    w.writerow(["word", "meaning"])
-    for r in rows:
-        w.writerow(r)
-
-    data = buf.getvalue().encode("utf-8-sig")
-    return Response(
-        data,
-        mimetype="text/csv; charset=utf-8",
-        headers={"Content-Disposition": 'attachment; filename="wordbook.csv"'},
-    )
-
-
-def _draw_pdf(items: List[CardItem]) -> bytes:
     pdfmetrics.registerFont(UnicodeCIDFont("HeiseiKakuGo-W5"))
 
     out = io.BytesIO()
@@ -205,8 +258,8 @@ def _draw_pdf(items: List[CardItem]) -> bytes:
         y -= 8 * mm
         c.line(left, y + 4 * mm, width - right, y + 4 * mm)
 
-    def wrap(text: str, max_chars: int) -> List[str]:
-        lines: List[str] = []
+    def wrap(text: str, max_chars: int):
+        lines = []
         s = text
         while len(s) > max_chars:
             lines.append(s[:max_chars])
@@ -216,15 +269,20 @@ def _draw_pdf(items: List[CardItem]) -> bytes:
 
     header()
 
-    for it in items:
-        meaning_lines = wrap(it.meaning, 38)
+    for r in rows:
+        w = (r.get("word") or "").strip()
+        m = (r.get("meaning") or "").strip()
+        if not w and not m:
+            continue
+
+        meaning_lines = wrap(m, 38)
         row_h = (max(1, len(meaning_lines)) * 5.5 + 4) * mm
 
         if y - row_h < bottom:
             new_page()
             header()
 
-        c.drawString(left, y, it.word)
+        c.drawString(left, y, w)
         yy = y
         for ln in meaning_lines:
             c.drawString(left + col1_w + 8 * mm, yy, ln)
@@ -236,18 +294,34 @@ def _draw_pdf(items: List[CardItem]) -> bytes:
     c.save()
     return out.getvalue()
 
-
-@app.get("/export.pdf")
+@app.post("/export.pdf")
 def export_pdf():
-    with LOCK:
-        items = list(ITEMS)
-    data = _draw_pdf(items)
+    data = request.get_data(cache=False, as_text=True) or "{}"
+    try:
+        payload = json.loads(data)
+    except Exception:
+        payload = {}
+
+    items = payload.get("items")
+    if not isinstance(items, list):
+        items = []
+
+    rows: List[Dict[str, str]] = []
+    for it in items:
+        if isinstance(it, dict):
+            rows.append(
+                {
+                    "word": str(it.get("word", ""))[:80],
+                    "meaning": str(it.get("meaning", ""))[:200],
+                }
+            )
+
+    pdf = _draw_pdf(rows)
     return Response(
-        data,
+        pdf,
         mimetype="application/pdf",
         headers={"Content-Disposition": 'attachment; filename="wordbook.pdf"'},
     )
-
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5000"))
