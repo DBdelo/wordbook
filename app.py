@@ -226,14 +226,13 @@ def _draw_pdf_word_sheet(rows: List[Dict[str, str]]) -> bytes:
     from reportlab.pdfbase.cidfonts import UnicodeCIDFont
     from reportlab.pdfgen import canvas
 
-    # 日本語フォント（前の方と同じ）
-    pdfmetrics.registerFont(UnicodeCIDFont("HeiseiKakuGo-W5"))
+    jp_font = "HeiseiKakuGo-W5"
+    pdfmetrics.registerFont(UnicodeCIDFont(jp_font))
 
     out = io.BytesIO()
     c = canvas.Canvas(out, pagesize=A4)
     width, height = A4
 
-    # layout
     margin_x = 12 * mm
     margin_top = 12 * mm
     margin_bottom = 12 * mm
@@ -241,23 +240,54 @@ def _draw_pdf_word_sheet(rows: List[Dict[str, str]]) -> bytes:
     table_top = height - margin_top
     table_bottom = margin_bottom
 
-    total_rows = 25  # per side
+    total_rows = 25
     row_h = (table_top - table_bottom) / total_rows
 
     gap = 8 * mm
     half_w = (width - 2 * margin_x - gap) / 2
 
-    # columns within each half: No / word / 単語（word と 単語は同じ幅）
+    # No / word / 単語（wordと単語は同じ幅）
     no_w = 10 * mm
     text_w = (half_w - no_w) / 2
     word_w = text_w
-    meaning_w = text_w  # 同じ
+    meaning_w = text_w
 
-    def trunc(s: str, max_chars: int) -> str:
-        s = (s or "").replace("\r", " ").replace("\n", " ").strip()
-        if len(s) <= max_chars:
+    pad = 2 * mm
+
+    def clean(s: str) -> str:
+        return (s or "").replace("\r", " ").replace("\n", " ").strip()
+
+    def text_width(font_name: str, size: float, s: str) -> float:
+        try:
+            return pdfmetrics.stringWidth(s, font_name, size)
+        except Exception:
+            return pdfmetrics.stringWidth(s, "Helvetica", size)
+
+    def truncate_to_fit(font_name: str, size: float, s: str, max_w: float) -> str:
+        s = clean(s)
+        if text_width(font_name, size, s) <= max_w:
             return s
-        return s[: max_chars - 1] + "…"
+        ell = "…"
+        if text_width(font_name, size, ell) > max_w:
+            return ""
+        t = s
+        while t and text_width(font_name, size, t + ell) > max_w:
+            t = t[:-1]
+        return (t + ell) if t else ell
+
+    def draw_fit_text(font_name: str, base_size: float, min_size: float, x: float, y: float, s: str, max_w: float):
+        s = clean(s)
+        if not s:
+            return
+        w0 = text_width(font_name, base_size, s)
+        size = base_size
+        if w0 > max_w and w0 > 0:
+            size = base_size * (max_w / w0)
+            if size < min_size:
+                size = min_size
+        s2 = truncate_to_fit(font_name, size, s, max_w)
+        c.setFont(font_name, size)
+        c.drawString(x, y, s2)
 
     def draw_page(page_rows: List[Dict[str, str]], start_no: int):
         left_x0 = margin_x
@@ -267,25 +297,20 @@ def _draw_pdf_word_sheet(rows: List[Dict[str, str]]) -> bytes:
 
         c.setLineWidth(0.6)
 
-        # grids
         for x0, x1 in ((left_x0, left_x1), (right_x0, right_x1)):
-            # vertical
             c.line(x0, table_bottom, x0, table_top)
             c.line(x1, table_bottom, x1, table_top)
             c.line(x0 + no_w, table_bottom, x0 + no_w, table_top)
             c.line(x0 + no_w + word_w, table_bottom, x0 + no_w + word_w, table_top)
-
-            # horizontal
             for r in range(total_rows + 1):
                 y = table_top - r * row_h
                 c.line(x0, y, x1, y)
 
-        # font sizes
         no_size = 10
-        meaning_size = 10
-        word_size = 13  # 英字だけ少し大きく
+        meaning_base = 12
+        word_base = 16
+        min_size = 6
 
-        # fill texts
         for i in range(min(50, len(page_rows))):
             n = start_no + i
             side = 0 if i < 25 else 1
@@ -295,33 +320,45 @@ def _draw_pdf_word_sheet(rows: List[Dict[str, str]]) -> bytes:
             y_top = table_top - row * row_h
             y_text = y_top - 0.72 * row_h
 
-            word = trunc(str(page_rows[i].get("word", "")), 26)
-            meaning = trunc(str(page_rows[i].get("meaning", "")), 26)
+            word = str(page_rows[i].get("word", ""))
+            meaning = str(page_rows[i].get("meaning", ""))
 
-            # No.
-            c.setFont("HeiseiKakuGo-W5", no_size)
-            c.drawString(x0 + 2 * mm, y_text, str(n))
+            # No（縮小しない）
+            c.setFont(jp_font, no_size)
+            c.drawString(x0 + pad, y_text, str(n))
 
-            # word（英字フォント）
-            c.setFont("Helvetica", word_size)
-            c.drawString(x0 + no_w + 2 * mm, y_text, word)
+            # word（枠に入らなければ縮小→それでもダメなら末尾…）
+            draw_fit_text(
+                "Helvetica",
+                word_base,
+                min_size,
+                x0 + no_w + pad,
+                y_text,
+                word,
+                word_w - 2 * pad,
+            )
 
-            # 単語（日本語フォント）
-            c.setFont("HeiseiKakuGo-W5", meaning_size)
-            c.drawString(x0 + no_w + word_w + 2 * mm, y_text, meaning)
+            # 単語（枠に入らなければ縮小→それでもダメなら末尾…）
+            draw_fit_text(
+                jp_font,
+                meaning_base,
+                min_size,
+                x0 + no_w + word_w + pad,
+                y_text,
+                meaning,
+                meaning_w - 2 * pad,
+            )
 
-    # clean
     cleaned: List[Dict[str, str]] = []
     for it in rows:
         if isinstance(it, dict):
             cleaned.append(
                 {
-                    "word": str(it.get("word", ""))[:80],
-                    "meaning": str(it.get("meaning", ""))[:200],
+                    "word": clean(str(it.get("word", "")))[:80],
+                    "meaning": clean(str(it.get("meaning", "")))[:200],
                 }
             )
 
-    # paginate: 50 per page (51個以上は2枚目)
     page_size = 50
     start_no = 1
     for p in range(0, len(cleaned) if cleaned else 1, page_size):
