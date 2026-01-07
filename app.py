@@ -51,26 +51,26 @@ HTML = r"""
     <div class="card">
       <form id="addForm">
         <div>
-          <label>英単語</label>
+          <label>word</label>
           <input id="word" autocomplete="off" required maxlength="80" />
         </div>
         <div>
-          <label>日本語の意味</label>
+          <label>単語</label>
           <input id="meaning" autocomplete="off" required maxlength="200" />
         </div>
         <div>
           <button type="submit">記録</button>
         </div>
       </form>
-      <div class="muted">データはこのブラウザ内に保存されます（サーバーには保存しません）。</div>
+      <div class="muted">データはこのブラウザ内に保存されます。</div>
     </div>
 
     <div class="card">
       <table>
         <thead>
           <tr>
-            <th style="width:30%">英単語</th>
-            <th>意味</th>
+            <th style="width:30%">word</th>
+            <th>単語</th>
             <th style="width:90px">操作</th>
           </tr>
         </thead>
@@ -218,7 +218,8 @@ HTML = r"""
 def index():
     return render_template_string(HTML)
 
-def _draw_pdf(rows: List[Dict[str, str]]) -> bytes:
+
+def _draw_pdf_word_sheet(rows: List[Dict[str, str]]) -> bytes:
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.units import mm
     from reportlab.pdfbase import pdfmetrics
@@ -229,70 +230,99 @@ def _draw_pdf(rows: List[Dict[str, str]]) -> bytes:
 
     out = io.BytesIO()
     c = canvas.Canvas(out, pagesize=A4)
-    c.setTitle("単語帳")
-
     width, height = A4
-    left = 16 * mm
-    right = 16 * mm
-    top = 18 * mm
-    bottom = 18 * mm
 
-    c.setFont("HeiseiKakuGo-W5", 14)
-    c.drawString(left, height - top, "単語帳")
+    # layout
+    margin_x = 12 * mm
+    margin_top = 12 * mm
+    margin_bottom = 12 * mm
 
-    y = height - top - 12 * mm
-    col1_w = 55 * mm
+    table_top = height - margin_top
+    table_bottom = margin_bottom
 
-    def new_page():
-        nonlocal y
-        c.showPage()
+    total_rows = 25  # per side
+    row_h = (table_top - table_bottom) / total_rows
+
+    gap = 8 * mm
+    half_w = (width - 2 * margin_x - gap) / 2
+
+    # columns within each half: No / word / 単語
+    no_w = 10 * mm
+    word_w = 45 * mm
+    meaning_w = half_w - no_w - word_w
+
+    def trunc(s: str, max_chars: int) -> str:
+        s = (s or "").replace("\r", " ").replace("\n", " ").strip()
+        if len(s) <= max_chars:
+            return s
+        return s[: max_chars - 1] + "…"
+
+    def draw_page(page_rows: List[Dict[str, str]], start_no: int):
+        # outer halves
+        left_x0 = margin_x
+        left_x1 = left_x0 + half_w
+        right_x0 = left_x1 + gap
+        right_x1 = right_x0 + half_w
+
+        # line style
+        c.setLineWidth(0.6)
+
+        # draw grids (left and right)
+        for x0, x1 in ((left_x0, left_x1), (right_x0, right_x1)):
+            # vertical lines
+            c.line(x0, table_bottom, x0, table_top)
+            c.line(x1, table_bottom, x1, table_top)
+            c.line(x0 + no_w, table_bottom, x0 + no_w, table_top)
+            c.line(x0 + no_w + word_w, table_bottom, x0 + no_w + word_w, table_top)
+
+            # horizontal lines
+            for r in range(total_rows + 1):
+                y = table_top - r * row_h
+                c.line(x0, y, x1, y)
+
+        # fill texts
         c.setFont("HeiseiKakuGo-W5", 10)
-        y = height - top
 
-    def header():
-        nonlocal y
-        c.setFont("HeiseiKakuGo-W5", 11)
-        c.drawString(left, y, "英単語")
-        c.drawString(left + col1_w + 8 * mm, y, "意味")
-        c.setFont("HeiseiKakuGo-W5", 10)
-        y -= 8 * mm
-        c.line(left, y + 4 * mm, width - right, y + 4 * mm)
+        # indices 0..49 for this page
+        for i in range(min(50, len(page_rows))):
+            n = start_no + i
+            side = 0 if i < 25 else 1
+            row = i if i < 25 else i - 25
 
-    def wrap(text: str, max_chars: int):
-        lines = []
-        s = text
-        while len(s) > max_chars:
-            lines.append(s[:max_chars])
-            s = s[max_chars:]
-        lines.append(s)
-        return lines
+            x0 = left_x0 if side == 0 else right_x0
+            y_top = table_top - row * row_h
+            y_text = y_top - 0.72 * row_h
 
-    header()
+            word = trunc(str(page_rows[i].get("word", "")), 22)
+            meaning = trunc(str(page_rows[i].get("meaning", "")), 22)
 
-    for r in rows:
-        w = (r.get("word") or "").strip()
-        m = (r.get("meaning") or "").strip()
-        if not w and not m:
-            continue
+            c.drawString(x0 + 2 * mm, y_text, str(n))
+            c.drawString(x0 + no_w + 2 * mm, y_text, word)
+            c.drawString(x0 + no_w + word_w + 2 * mm, y_text, meaning)
 
-        meaning_lines = wrap(m, 38)
-        row_h = (max(1, len(meaning_lines)) * 5.5 + 4) * mm
+    # paginate: 50 per page
+    cleaned: List[Dict[str, str]] = []
+    for it in rows:
+        if isinstance(it, dict):
+            cleaned.append(
+                {
+                    "word": str(it.get("word", ""))[:80],
+                    "meaning": str(it.get("meaning", ""))[:200],
+                }
+            )
 
-        if y - row_h < bottom:
-            new_page()
-            header()
-
-        c.drawString(left, y, w)
-        yy = y
-        for ln in meaning_lines:
-            c.drawString(left + col1_w + 8 * mm, yy, ln)
-            yy -= 5.5 * mm
-
-        y -= row_h
-        c.line(left, y + 2 * mm, width - right, y + 2 * mm)
+    page_size = 50
+    start_no = 1
+    for p in range(0, len(cleaned) if cleaned else 1, page_size):
+        chunk = cleaned[p : p + page_size] if cleaned else []
+        draw_page(chunk, start_no)
+        start_no += page_size
+        if p + page_size < len(cleaned):
+            c.showPage()
 
     c.save()
     return out.getvalue()
+
 
 @app.post("/export.pdf")
 def export_pdf():
@@ -306,22 +336,13 @@ def export_pdf():
     if not isinstance(items, list):
         items = []
 
-    rows: List[Dict[str, str]] = []
-    for it in items:
-        if isinstance(it, dict):
-            rows.append(
-                {
-                    "word": str(it.get("word", ""))[:80],
-                    "meaning": str(it.get("meaning", ""))[:200],
-                }
-            )
-
-    pdf = _draw_pdf(rows)
+    pdf = _draw_pdf_word_sheet(items)
     return Response(
         pdf,
         mimetype="application/pdf",
         headers={"Content-Disposition": 'attachment; filename="wordbook.pdf"'},
     )
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5000"))
