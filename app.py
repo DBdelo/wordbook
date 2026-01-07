@@ -189,3 +189,172 @@ HTML = r"""
     const items = loadItems();
     const res = await fetch("/export.pdf", {
       method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({items})
+    });
+    if (!res.ok) {
+      alert("PDF出力に失敗しました");
+      return;
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "wordbook.pdf";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>
+"""
+
+@app.get("/")
+def index():
+    return render_template_string(HTML)
+
+
+def _draw_pdf_word_sheet(rows: List[Dict[str, str]]) -> bytes:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import mm
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+    from reportlab.pdfgen import canvas
+
+    # 日本語フォント（前の方と同じ）
+    pdfmetrics.registerFont(UnicodeCIDFont("HeiseiKakuGo-W5"))
+
+    out = io.BytesIO()
+    c = canvas.Canvas(out, pagesize=A4)
+    width, height = A4
+
+    # layout
+    margin_x = 12 * mm
+    margin_top = 12 * mm
+    margin_bottom = 12 * mm
+
+    table_top = height - margin_top
+    table_bottom = margin_bottom
+
+    total_rows = 25  # per side
+    row_h = (table_top - table_bottom) / total_rows
+
+    gap = 8 * mm
+    half_w = (width - 2 * margin_x - gap) / 2
+
+    # columns within each half: No / word / 単語（word と 単語は同じ幅）
+    no_w = 10 * mm
+    text_w = (half_w - no_w) / 2
+    word_w = text_w
+    meaning_w = text_w  # 同じ
+
+    def trunc(s: str, max_chars: int) -> str:
+        s = (s or "").replace("\r", " ").replace("\n", " ").strip()
+        if len(s) <= max_chars:
+            return s
+        return s[: max_chars - 1] + "…"
+
+    def draw_page(page_rows: List[Dict[str, str]], start_no: int):
+        left_x0 = margin_x
+        left_x1 = left_x0 + half_w
+        right_x0 = left_x1 + gap
+        right_x1 = right_x0 + half_w
+
+        c.setLineWidth(0.6)
+
+        # grids
+        for x0, x1 in ((left_x0, left_x1), (right_x0, right_x1)):
+            # vertical
+            c.line(x0, table_bottom, x0, table_top)
+            c.line(x1, table_bottom, x1, table_top)
+            c.line(x0 + no_w, table_bottom, x0 + no_w, table_top)
+            c.line(x0 + no_w + word_w, table_bottom, x0 + no_w + word_w, table_top)
+
+            # horizontal
+            for r in range(total_rows + 1):
+                y = table_top - r * row_h
+                c.line(x0, y, x1, y)
+
+        # font sizes
+        no_size = 10
+        meaning_size = 10
+        word_size = 11  # 英字だけ少し大きく
+
+        # fill texts
+        for i in range(min(50, len(page_rows))):
+            n = start_no + i
+            side = 0 if i < 25 else 1
+            row = i if i < 25 else i - 25
+
+            x0 = left_x0 if side == 0 else right_x0
+            y_top = table_top - row * row_h
+            y_text = y_top - 0.72 * row_h
+
+            word = trunc(str(page_rows[i].get("word", "")), 26)
+            meaning = trunc(str(page_rows[i].get("meaning", "")), 26)
+
+            # No.
+            c.setFont("HeiseiKakuGo-W5", no_size)
+            c.drawString(x0 + 2 * mm, y_text, str(n))
+
+            # word（英字フォント）
+            c.setFont("Helvetica", word_size)
+            c.drawString(x0 + no_w + 2 * mm, y_text, word)
+
+            # 単語（日本語フォント）
+            c.setFont("HeiseiKakuGo-W5", meaning_size)
+            c.drawString(x0 + no_w + word_w + 2 * mm, y_text, meaning)
+
+    # clean
+    cleaned: List[Dict[str, str]] = []
+    for it in rows:
+        if isinstance(it, dict):
+            cleaned.append(
+                {
+                    "word": str(it.get("word", ""))[:80],
+                    "meaning": str(it.get("meaning", ""))[:200],
+                }
+            )
+
+    # paginate: 50 per page (51個以上は2枚目)
+    page_size = 50
+    start_no = 1
+    for p in range(0, len(cleaned) if cleaned else 1, page_size):
+        chunk = cleaned[p : p + page_size] if cleaned else []
+        draw_page(chunk, start_no)
+        start_no += page_size
+        if p + page_size < len(cleaned):
+            c.showPage()
+
+    c.save()
+    return out.getvalue()
+
+
+@app.post("/export.pdf")
+def export_pdf():
+    data = request.get_data(cache=False, as_text=True) or "{}"
+    try:
+        payload = json.loads(data)
+    except Exception:
+        payload = {}
+
+    items = payload.get("items")
+    if not isinstance(items, list):
+        items = []
+
+    pdf = _draw_pdf_word_sheet(items)
+    return Response(
+        pdf,
+        mimetype="application/pdf",
+        headers={"Content-Disposition": 'attachment; filename="wordbook.pdf"'},
+    )
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", "5000"))
+    app.run(host="0.0.0.0", port=port, debug=False)
