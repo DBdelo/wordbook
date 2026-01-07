@@ -283,7 +283,7 @@ def _draw_pdf_word_sheet(rows: List[Dict[str, str]]) -> bytes:
         # font sizes
         no_size = 10
         meaning_size = 10
-        word_size = 11  # 英字だけ少し大きく
+        word_size = 13  # 英字だけ少し大きく
 
         # fill texts
         for i in range(min(50, len(page_rows))):
