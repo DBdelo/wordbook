@@ -178,7 +178,7 @@ HTML = r"""
     }
   }
 
-  // 入力停止後に自動翻訳
+  // 入力停止後に自動検索
   wordEl.addEventListener("input", () => {
     if (debounceTimer) clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
@@ -464,19 +464,54 @@ def _extract_ja_translations(wikitext: str, limit: int = 6) -> List[str]:
     return out
 
 
-def _lookup_case_insensitive(word: str) -> str:
+POS_MAP = {
+    "Verb": "（動）",
+    "Pronoun": "（代名）",
+    "Adverb": "（副）",
+    "Noun": "（名）",
+    "Adjective": "（形）",
+    "Conjunction": "（接）",
+    "Auxiliary verb": "（助動）",
+    "Preposition": "（前）",
+    "Article": "（冠）",
+    "Interjection": "（間投）",
+}
+
+
+def _extract_pos_from_english_section(wikitext: str) -> str:
+    if not wikitext:
+        return ""
+    m = re.search(r"(?ms)^==\s*English\s*==\s*(.*?)(?=^==[^=]|\Z)", wikitext)
+    if not m:
+        return ""
+    eng = m.group(1)
+    m2 = re.search(
+        r"(?m)^===\s*(Noun|Verb|Adjective|Adverb|Pronoun|Conjunction|Auxiliary verb|Preposition|Article|Interjection)\s*===\s*$",
+        eng,
+    )
+    if not m2:
+        return ""
+    return POS_MAP.get(m2.group(1), "")
+
+
+def _lookup_case_insensitive_with_pos(word: str) -> str:
     w = word.strip()
     if not w:
         return ""
+
     variants = []
     for v in (w, w.lower(), w.capitalize(), w.title(), w.upper()):
         if v and v not in variants:
             variants.append(v)
+
     for v in variants:
         raw = _fetch_wiktionary_raw(v)
         ja = _extract_ja_translations(raw)
         if ja:
-            return "、".join(ja)
+            pos = _extract_pos_from_english_section(raw)
+            body = "、".join(ja)
+            return (pos + body) if pos else body
+
     return ""
 
 
@@ -489,7 +524,7 @@ def lookup():
         payload = {}
 
     word = str(payload.get("word", "")).strip()
-    meaning = _lookup_case_insensitive(word)
+    meaning = _lookup_case_insensitive_with_pos(word)
     return Response(json.dumps({"meaning": meaning}, ensure_ascii=False), mimetype="application/json")
 
 
