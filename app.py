@@ -25,7 +25,7 @@ HTML = r"""
     .wrap{max-width:860px;margin:0 auto;}
     h1{font-size:22px;margin:0;}
     .card{background:#fff;border-radius:14px;box-shadow:0 6px 18px rgba(0,0,0,.06);padding:16px;margin-bottom:14px;}
-    form{display:grid;grid-template-columns:1fr 1fr auto auto;gap:10px;align-items:end;}
+    form{display:grid;grid-template-columns:1fr 1fr auto;gap:10px;align-items:end;}
     label{display:block;font-size:12px;color:#444;margin-bottom:6px;}
     input{width:100%;padding:10px 12px;border:1px solid #d7dbe7;border-radius:10px;font-size:14px;}
     button,.btn{appearance:none;border:0;border-radius:10px;padding:10px 14px;font-size:14px;cursor:pointer;text-decoration:none;display:inline-block}
@@ -39,8 +39,6 @@ HTML = r"""
     .muted{color:#6b7280;font-size:12px;margin-top:8px}
     .topbar{display:flex;gap:10px;flex-wrap:wrap;justify-content:space-between;align-items:center;margin-bottom:12px}
     .hint{color:#6b7280;font-size:12px;margin-top:10px;min-height:1em}
-    .smallbtn{background:#111827;}
-    .smallbtn:disabled{opacity:.5;cursor:not-allowed;}
   </style>
 </head>
 <body>
@@ -63,9 +61,6 @@ HTML = r"""
         <div>
           <label>単語</label>
           <input id="meaning" autocomplete="off" required maxlength="200" />
-        </div>
-        <div>
-          <button class="smallbtn" id="btnLookup" type="button">翻訳</button>
         </div>
         <div>
           <button type="submit">記録</button>
@@ -103,7 +98,6 @@ HTML = r"""
   const btnCsv = $("btnCsv");
   const btnPdf = $("btnPdf");
   const btnClear = $("btnClear");
-  const btnLookup = $("btnLookup");
   const hint = $("hint");
 
   let lastQueried = "";
@@ -149,17 +143,16 @@ HTML = r"""
     `).join("");
   }
 
-  async function doLookup(word, showStatus) {
+  async function doLookup(word) {
     const w = word.trim();
     if (!w) { setHint(""); return; }
-
     if (w === lastQueried) return;
     lastQueried = w;
 
     if (inflight) inflight.abort();
     inflight = new AbortController();
 
-    if (showStatus) setHint("検索中…");
+    setHint("検索中…");
 
     try {
       const res = await fetch("/lookup", {
@@ -169,39 +162,28 @@ HTML = r"""
         signal: inflight.signal
       });
       if (!res.ok) {
-        if (showStatus) setHint("失敗しました");
+        setHint("失敗しました");
         return;
       }
       const data = await res.json();
       if (data && data.meaning) {
         meaningEl.value = data.meaning;
-        if (showStatus) setHint("");
+        setHint("");
       } else {
-        if (showStatus) setHint("見つかりませんでした");
+        setHint("見つかりませんでした");
       }
     } catch (e) {
       if (e && e.name === "AbortError") return;
-      if (showStatus) setHint("失敗しました");
+      setHint("失敗しました");
     }
   }
 
-  // 自動翻訳（入力停止後に実行）
+  // 入力停止後に自動翻訳
   wordEl.addEventListener("input", () => {
     if (debounceTimer) clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
-      doLookup(wordEl.value, false);
+      doLookup(wordEl.value);
     }, 450);
-  });
-
-  // 手動翻訳（ボタン）
-  btnLookup.addEventListener("click", async () => {
-    btnLookup.disabled = true;
-    try {
-      await doLookup(wordEl.value, true);
-      meaningEl.focus();
-    } finally {
-      btnLookup.disabled = false;
-    }
   });
 
   form.addEventListener("submit", (e) => {
@@ -486,19 +468,15 @@ def _lookup_case_insensitive(word: str) -> str:
     w = word.strip()
     if not w:
         return ""
-
-    # 同じ単語でも見出しが違うことがあるので順番に試す（大小文字を区別しない）
     variants = []
     for v in (w, w.lower(), w.capitalize(), w.title(), w.upper()):
         if v and v not in variants:
             variants.append(v)
-
     for v in variants:
         raw = _fetch_wiktionary_raw(v)
         ja = _extract_ja_translations(raw)
         if ja:
             return "、".join(ja)
-
     return ""
 
 
@@ -518,4 +496,3 @@ def lookup():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5000"))
     app.run(host="0.0.0.0", port=port, debug=False)
-
