@@ -38,7 +38,7 @@ HTML = r"""
     .del{background:#ef4444;}
     .muted{color:#6b7280;font-size:12px;margin-top:8px}
     .topbar{display:flex;gap:10px;flex-wrap:wrap;justify-content:space-between;align-items:center;margin-bottom:12px}
-    .hint{color:#6b7280;font-size:12px;margin-top:10px}
+    .hint{color:#6b7280;font-size:12px;margin-top:10px;min-height:1em}
     .smallbtn{background:#111827;}
     .smallbtn:disabled{opacity:.5;cursor:not-allowed;}
   </style>
@@ -106,6 +106,10 @@ HTML = r"""
   const btnLookup = $("btnLookup");
   const hint = $("hint");
 
+  let lastQueried = "";
+  let debounceTimer = null;
+  let inflight = null; // AbortController
+
   function loadItems() {
     try {
       const raw = localStorage.getItem(KEY);
@@ -145,6 +149,61 @@ HTML = r"""
     `).join("");
   }
 
+  async function doLookup(word, showStatus) {
+    const w = word.trim();
+    if (!w) { setHint(""); return; }
+
+    if (w === lastQueried) return;
+    lastQueried = w;
+
+    if (inflight) inflight.abort();
+    inflight = new AbortController();
+
+    if (showStatus) setHint("検索中…");
+
+    try {
+      const res = await fetch("/lookup", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({word: w}),
+        signal: inflight.signal
+      });
+      if (!res.ok) {
+        if (showStatus) setHint("失敗しました");
+        return;
+      }
+      const data = await res.json();
+      if (data && data.meaning) {
+        meaningEl.value = data.meaning;
+        if (showStatus) setHint("");
+      } else {
+        if (showStatus) setHint("見つかりませんでした");
+      }
+    } catch (e) {
+      if (e && e.name === "AbortError") return;
+      if (showStatus) setHint("失敗しました");
+    }
+  }
+
+  // 自動翻訳（入力停止後に実行）
+  wordEl.addEventListener("input", () => {
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      doLookup(wordEl.value, false);
+    }, 450);
+  });
+
+  // 手動翻訳（ボタン）
+  btnLookup.addEventListener("click", async () => {
+    btnLookup.disabled = true;
+    try {
+      await doLookup(wordEl.value, true);
+      meaningEl.focus();
+    } finally {
+      btnLookup.disabled = false;
+    }
+  });
+
   form.addEventListener("submit", (e) => {
     e.preventDefault();
     const word = wordEl.value.trim();
@@ -157,6 +216,7 @@ HTML = r"""
 
     wordEl.value = "";
     meaningEl.value = "";
+    lastQueried = "";
     setHint("");
     wordEl.focus();
 
@@ -222,38 +282,6 @@ HTML = r"""
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
-  });
-
-  btnLookup.addEventListener("click", async () => {
-    const word = wordEl.value.trim();
-    if (!word) return;
-
-    btnLookup.disabled = true;
-    setHint("検索中…");
-
-    try {
-      const res = await fetch("/lookup", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({word})
-      });
-      if (!res.ok) {
-        setHint("失敗しました");
-        return;
-      }
-      const data = await res.json();
-      if (data && data.meaning) {
-        meaningEl.value = data.meaning;
-        setHint("");
-        meaningEl.focus();
-      } else {
-        setHint("見つかりませんでした");
-      }
-    } catch {
-      setHint("失敗しました");
-    } finally {
-      btnLookup.disabled = false;
-    }
   });
 
   render();
@@ -440,21 +468,38 @@ def _fetch_wiktionary_raw(title: str) -> str:
 def _extract_ja_translations(wikitext: str, limit: int = 6) -> List[str]:
     if not wikitext:
         return []
-    # {{t|ja|...}}, {{t+|ja|...}} から日本語語形を抜く
     hits = re.findall(r"\{\{t\+?\|ja\|([^|}\n]+)", wikitext)
     out: List[str] = []
     seen = set()
     for h in hits:
         s = (h or "").strip()
-        if not s:
-            continue
-        if s in seen:
+        if not s or s in seen:
             continue
         seen.add(s)
         out.append(s)
         if len(out) >= limit:
             break
     return out
+
+
+def _lookup_case_insensitive(word: str) -> str:
+    w = word.strip()
+    if not w:
+        return ""
+
+    # 同じ単語でも見出しが違うことがあるので順番に試す（大小文字を区別しない）
+    variants = []
+    for v in (w, w.lower(), w.capitalize(), w.title(), w.upper()):
+        if v and v not in variants:
+            variants.append(v)
+
+    for v in variants:
+        raw = _fetch_wiktionary_raw(v)
+        ja = _extract_ja_translations(raw)
+        if ja:
+            return "、".join(ja)
+
+    return ""
 
 
 @app.post("/lookup")
@@ -466,16 +511,11 @@ def lookup():
         payload = {}
 
     word = str(payload.get("word", "")).strip()
-    if not word:
-        return Response(json.dumps({"meaning": ""}, ensure_ascii=False), mimetype="application/json")
-
-    raw = _fetch_wiktionary_raw(word)
-    ja = _extract_ja_translations(raw)
-
-    meaning = "、".join(ja) if ja else ""
+    meaning = _lookup_case_insensitive(word)
     return Response(json.dumps({"meaning": meaning}, ensure_ascii=False), mimetype="application/json")
 
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5000"))
     app.run(host="0.0.0.0", port=port, debug=False)
+
