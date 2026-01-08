@@ -27,7 +27,7 @@ HTML = r"""
     .card{background:#fff;border-radius:14px;box-shadow:0 6px 18px rgba(0,0,0,.06);padding:16px;margin-bottom:14px;}
     form{display:grid;grid-template-columns:1fr 1fr auto;gap:10px;align-items:end;}
     label{display:block;font-size:12px;color:#444;margin-bottom:6px;}
-    input{width:100%;padding:10px 12px;border:1px solid #d7dbe7;border-radius:10px;font-size:14px;}
+    input,select{width:100%;padding:10px 12px;border:1px solid #d7dbe7;border-radius:10px;font-size:14px;background:#fff;}
     button,.btn{appearance:none;border:0;border-radius:10px;padding:10px 14px;font-size:14px;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;gap:8px}
     button{background:#2563eb;color:#fff;}
     .btn{background:#111827;color:#fff;}
@@ -51,6 +51,14 @@ HTML = r"""
     .speak:disabled{opacity:.5;cursor:not-allowed;}
     .wordcell{display:flex;align-items:center;gap:10px}
     .wordtext{font-weight:600}
+
+    .voicebox{
+      margin-top:12px;
+      display:grid;
+      grid-template-columns: 1fr;
+      gap:8px;
+    }
+    .voicehint{color:#6b7280;font-size:12px}
   </style>
 </head>
 <body>
@@ -78,6 +86,15 @@ HTML = r"""
           <button type="submit">記録</button>
         </div>
       </form>
+
+      <div class="voicebox">
+        <div>
+          <label>読み上げ音声</label>
+          <select id="voiceSelect"></select>
+        </div>
+        <div class="voicehint" id="voiceHint"></div>
+      </div>
+
       <div class="hint" id="hint"></div>
       <div class="muted">データはこのブラウザ内に保存されます。</div>
     </div>
@@ -101,6 +118,7 @@ HTML = r"""
 <script>
 (() => {
   const KEY = "wordbook_items_v1";
+  const VOICE_KEY = "wordbook_voice_v1";
 
   const $ = (id) => document.getElementById(id);
   const tbody = $("tbody");
@@ -111,6 +129,9 @@ HTML = r"""
   const btnPdf = $("btnPdf");
   const btnClear = $("btnClear");
   const hint = $("hint");
+
+  const voiceSelect = $("voiceSelect");
+  const voiceHint = $("voiceHint");
 
   let lastQueried = "";
   let debounceTimer = null;
@@ -144,11 +165,98 @@ HTML = r"""
     return !!(window.speechSynthesis && window.SpeechSynthesisUtterance);
   }
 
+  function getVoicesSafe() {
+    try {
+      return (window.speechSynthesis && window.speechSynthesis.getVoices) ? window.speechSynthesis.getVoices() : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function loadVoiceChoice() {
+    try { return localStorage.getItem(VOICE_KEY) || ""; } catch { return ""; }
+  }
+
+  function saveVoiceChoice(key) {
+    try { localStorage.setItem(VOICE_KEY, key || ""); } catch {}
+  }
+
+  function voiceKey(v) {
+    // 同じ音声を安定して選ぶためのキー
+    const name = v && v.name ? v.name : "";
+    const lang = v && v.lang ? v.lang : "";
+    const uri = v && v.voiceURI ? v.voiceURI : "";
+    return [name, lang, uri].join("|");
+  }
+
+  function pickVoiceForEnglish(voices) {
+    // 優先：en-* → それ以外
+    const en = voices.filter(v => (v.lang || "").toLowerCase().startsWith("en"));
+    if (en.length) return en[0];
+    return voices[0] || null;
+  }
+
+  function rebuildVoiceSelect() {
+    voiceSelect.innerHTML = "";
+    if (!canSpeak()) {
+      const opt = document.createElement("option");
+      opt.value = "";
+      opt.textContent = "このブラウザは非対応";
+      voiceSelect.appendChild(opt);
+      voiceSelect.disabled = true;
+      voiceHint.textContent = "";
+      return;
+    }
+
+    const voices = getVoicesSafe();
+    voiceSelect.disabled = voices.length === 0;
+
+    const saved = loadVoiceChoice();
+    let selectedKey = saved;
+
+    // 何も保存されていないなら英語っぽいのを自動選択
+    if (!selectedKey && voices.length) {
+      const v = pickVoiceForEnglish(voices);
+      if (v) selectedKey = voiceKey(v);
+    }
+
+    // 選択肢作成
+    voices.forEach(v => {
+      const opt = document.createElement("option");
+      opt.value = voiceKey(v);
+      const label = `${v.name} (${v.lang})`;
+      opt.textContent = label;
+      if (opt.value === selectedKey) opt.selected = true;
+      voiceSelect.appendChild(opt);
+    });
+
+    // 表示が空ならヒント
+    if (voices.length === 0) {
+      voiceHint.textContent = "音声一覧を取得できませんでした";
+    } else {
+      const sel = voices.find(v => voiceKey(v) === voiceSelect.value) || null;
+      voiceHint.textContent = sel ? `現在：${sel.name}（${sel.lang}）` : "";
+      saveVoiceChoice(voiceSelect.value || "");
+    }
+  }
+
+  function getSelectedVoice() {
+    const voices = getVoicesSafe();
+    const key = voiceSelect.value || loadVoiceChoice();
+    const v = voices.find(x => voiceKey(x) === key);
+    return v || null;
+  }
+
   function speakWord(word) {
     if (!canSpeak()) return;
     try { window.speechSynthesis.cancel(); } catch {}
+
     const u = new SpeechSynthesisUtterance(word);
-    u.lang = "en-US";
+    const v = getSelectedVoice();
+    if (v) u.voice = v;
+    // voiceが無い場合の保険
+    if (!v) u.lang = "en-US";
+
     u.rate = 1.0;
     u.pitch = 1.0;
     window.speechSynthesis.speak(u);
@@ -310,6 +418,17 @@ HTML = r"""
     URL.revokeObjectURL(url);
   });
 
+  // 音声一覧は非同期で入ることがあるので両方で更新
+  if (canSpeak()) {
+    window.speechSynthesis.onvoiceschanged = () => rebuildVoiceSelect();
+  }
+  voiceSelect.addEventListener("change", () => {
+    saveVoiceChoice(voiceSelect.value || "");
+    const v = getSelectedVoice();
+    voiceHint.textContent = v ? `現在：${v.name}（${v.lang}）` : "";
+  });
+
+  rebuildVoiceSelect();
   render();
 })();
 </script>
