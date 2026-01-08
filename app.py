@@ -89,7 +89,7 @@ HTML = r"""
 
       <div class="voicebox">
         <div>
-          <label>読み上げ音声</label>
+          <label>読み上げ音声（英語のみ）</label>
           <select id="voiceSelect"></select>
         </div>
         <div class="voicehint" id="voiceHint"></div>
@@ -118,7 +118,7 @@ HTML = r"""
 <script>
 (() => {
   const KEY = "wordbook_items_v1";
-  const VOICE_KEY = "wordbook_voice_v1";
+  const VOICE_KEY = "wordbook_voice_v1_en";
 
   const $ = (id) => document.getElementById(id);
   const tbody = $("tbody");
@@ -173,6 +173,11 @@ HTML = r"""
     }
   }
 
+  function isEnglishVoice(v) {
+    const lang = (v && v.lang ? v.lang : "").toLowerCase();
+    return lang.startsWith("en");
+  }
+
   function loadVoiceChoice() {
     try { return localStorage.getItem(VOICE_KEY) || ""; } catch { return ""; }
   }
@@ -182,18 +187,10 @@ HTML = r"""
   }
 
   function voiceKey(v) {
-    // 同じ音声を安定して選ぶためのキー
     const name = v && v.name ? v.name : "";
     const lang = v && v.lang ? v.lang : "";
     const uri = v && v.voiceURI ? v.voiceURI : "";
     return [name, lang, uri].join("|");
-  }
-
-  function pickVoiceForEnglish(voices) {
-    // 優先：en-* → それ以外
-    const en = voices.filter(v => (v.lang || "").toLowerCase().startsWith("en"));
-    if (en.length) return en[0];
-    return voices[0] || null;
   }
 
   function rebuildVoiceSelect() {
@@ -208,43 +205,44 @@ HTML = r"""
       return;
     }
 
-    const voices = getVoicesSafe();
-    voiceSelect.disabled = voices.length === 0;
+    const voicesAll = getVoicesSafe();
+    const voices = voicesAll.filter(isEnglishVoice);
+
+    if (voices.length === 0) {
+      const opt = document.createElement("option");
+      opt.value = "";
+      opt.textContent = "英語音声が見つかりません";
+      voiceSelect.appendChild(opt);
+      voiceSelect.disabled = true;
+      voiceHint.textContent = "";
+      return;
+    }
+
+    voiceSelect.disabled = false;
 
     const saved = loadVoiceChoice();
     let selectedKey = saved;
 
-    // 何も保存されていないなら英語っぽいのを自動選択
-    if (!selectedKey && voices.length) {
-      const v = pickVoiceForEnglish(voices);
-      if (v) selectedKey = voiceKey(v);
-    }
+    if (!selectedKey) selectedKey = voiceKey(voices[0]);
 
-    // 選択肢作成
     voices.forEach(v => {
       const opt = document.createElement("option");
       opt.value = voiceKey(v);
-      const label = `${v.name} (${v.lang})`;
-      opt.textContent = label;
+      opt.textContent = `${v.name} (${v.lang})`;
       if (opt.value === selectedKey) opt.selected = true;
       voiceSelect.appendChild(opt);
     });
 
-    // 表示が空ならヒント
-    if (voices.length === 0) {
-      voiceHint.textContent = "音声一覧を取得できませんでした";
-    } else {
-      const sel = voices.find(v => voiceKey(v) === voiceSelect.value) || null;
-      voiceHint.textContent = sel ? `現在：${sel.name}（${sel.lang}）` : "";
-      saveVoiceChoice(voiceSelect.value || "");
-    }
+    saveVoiceChoice(voiceSelect.value || "");
+    const sel = voices.find(v => voiceKey(v) === voiceSelect.value) || null;
+    voiceHint.textContent = sel ? `現在：${sel.name}（${sel.lang}）` : "";
   }
 
   function getSelectedVoice() {
-    const voices = getVoicesSafe();
+    const voices = getVoicesSafe().filter(isEnglishVoice);
     const key = voiceSelect.value || loadVoiceChoice();
     const v = voices.find(x => voiceKey(x) === key);
-    return v || null;
+    return v || (voices[0] || null);
   }
 
   function speakWord(word) {
@@ -254,7 +252,6 @@ HTML = r"""
     const u = new SpeechSynthesisUtterance(word);
     const v = getSelectedVoice();
     if (v) u.voice = v;
-    // voiceが無い場合の保険
     if (!v) u.lang = "en-US";
 
     u.rate = 1.0;
@@ -269,8 +266,8 @@ HTML = r"""
       return;
     }
 
-    const speakDisabled = canSpeak() ? "" : "disabled";
-    const speakTitle = canSpeak() ? "読み上げ" : "このブラウザは読み上げ非対応";
+    const speakDisabled = (canSpeak() && !voiceSelect.disabled) ? "" : "disabled";
+    const speakTitle = (canSpeak() && !voiceSelect.disabled) ? "読み上げ" : "英語音声が使えません";
 
     tbody.innerHTML = items.map((it, i) => `
       <tr>
@@ -418,10 +415,13 @@ HTML = r"""
     URL.revokeObjectURL(url);
   });
 
-  // 音声一覧は非同期で入ることがあるので両方で更新
   if (canSpeak()) {
-    window.speechSynthesis.onvoiceschanged = () => rebuildVoiceSelect();
+    window.speechSynthesis.onvoiceschanged = () => {
+      rebuildVoiceSelect();
+      render();
+    };
   }
+
   voiceSelect.addEventListener("change", () => {
     saveVoiceChoice(voiceSelect.value || "");
     const v = getSelectedVoice();
