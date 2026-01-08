@@ -28,7 +28,7 @@ HTML = r"""
     form{display:grid;grid-template-columns:1fr 1fr auto;gap:10px;align-items:end;}
     label{display:block;font-size:12px;color:#444;margin-bottom:6px;}
     input{width:100%;padding:10px 12px;border:1px solid #d7dbe7;border-radius:10px;font-size:14px;}
-    button,.btn{appearance:none;border:0;border-radius:10px;padding:10px 14px;font-size:14px;cursor:pointer;text-decoration:none;display:inline-block}
+    button,.btn{appearance:none;border:0;border-radius:10px;padding:10px 14px;font-size:14px;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;gap:8px}
     button{background:#2563eb;color:#fff;}
     .btn{background:#111827;color:#fff;}
     .row{display:flex;gap:10px;flex-wrap:wrap}
@@ -39,6 +39,18 @@ HTML = r"""
     .muted{color:#6b7280;font-size:12px;margin-top:8px}
     .topbar{display:flex;gap:10px;flex-wrap:wrap;justify-content:space-between;align-items:center;margin-bottom:12px}
     .hint{color:#6b7280;font-size:12px;margin-top:10px;min-height:1em}
+
+    .speak{
+      background:#111827;
+      padding:8px 10px;
+      border-radius:10px;
+      color:#fff;
+      font-size:13px;
+      line-height:1;
+    }
+    .speak:disabled{opacity:.5;cursor:not-allowed;}
+    .wordcell{display:flex;align-items:center;gap:10px}
+    .wordtext{font-weight:600}
   </style>
 </head>
 <body>
@@ -74,7 +86,7 @@ HTML = r"""
       <table>
         <thead>
           <tr>
-            <th style="width:30%">word</th>
+            <th style="width:34%">word</th>
             <th>単語</th>
             <th style="width:90px">操作</th>
           </tr>
@@ -128,15 +140,38 @@ HTML = r"""
     hint.textContent = s || "";
   }
 
+  function canSpeak() {
+    return !!(window.speechSynthesis && window.SpeechSynthesisUtterance);
+  }
+
+  function speakWord(word) {
+    if (!canSpeak()) return;
+    try { window.speechSynthesis.cancel(); } catch {}
+    const u = new SpeechSynthesisUtterance(word);
+    u.lang = "en-US";
+    u.rate = 1.0;
+    u.pitch = 1.0;
+    window.speechSynthesis.speak(u);
+  }
+
   function render() {
     const items = loadItems();
     if (items.length === 0) {
       tbody.innerHTML = '<tr><td colspan="3" style="color:#6b7280;padding:16px 8px">まだありません。</td></tr>';
       return;
     }
+
+    const speakDisabled = canSpeak() ? "" : "disabled";
+    const speakTitle = canSpeak() ? "読み上げ" : "このブラウザは読み上げ非対応";
+
     tbody.innerHTML = items.map((it, i) => `
       <tr>
-        <td>${escapeHtml(it.word)}</td>
+        <td>
+          <div class="wordcell">
+            <button class="speak" type="button" data-speak="${i}" ${speakDisabled} title="${speakTitle}">🔊</button>
+            <span class="wordtext">${escapeHtml(it.word)}</span>
+          </div>
+        </td>
         <td>${escapeHtml(it.meaning)}</td>
         <td><button class="del" type="button" data-del="${i}">削除</button></td>
       </tr>
@@ -205,9 +240,19 @@ HTML = r"""
   });
 
   tbody.addEventListener("click", (e) => {
-    const btn = e.target.closest("button[data-del]");
-    if (!btn) return;
-    const idx = Number(btn.getAttribute("data-del"));
+    const speakBtn = e.target.closest("button[data-speak]");
+    if (speakBtn) {
+      const idx = Number(speakBtn.getAttribute("data-speak"));
+      const items = loadItems();
+      if (Number.isInteger(idx) && idx >= 0 && idx < items.length) {
+        speakWord(items[idx].word);
+      }
+      return;
+    }
+
+    const delBtn = e.target.closest("button[data-del]");
+    if (!delBtn) return;
+    const idx = Number(delBtn.getAttribute("data-del"));
     const items = loadItems();
     if (Number.isInteger(idx) && idx >= 0 && idx < items.length) {
       items.splice(idx, 1);
@@ -471,14 +516,12 @@ def _extract_ja_and_pos_nearby(wikitext: str, limit: int = 6) -> Tuple[str, List
     if not wikitext:
         return ("", [])
 
-    # 日本語訳の出現位置
     matches = list(JA_T_RE.finditer(wikitext))
     if not matches:
         return ("", [])
 
     first_pos = matches[0].start()
 
-    # まず日本語訳（ユニークで limit 件）
     out: List[str] = []
     seen = set()
     for m in matches:
@@ -490,8 +533,6 @@ def _extract_ja_and_pos_nearby(wikitext: str, limit: int = 6) -> Tuple[str, List
         if len(out) >= limit:
             break
 
-    # 品詞：最初の日本語訳より「上」にある、一番近い品詞見出しを拾う
-    # ただし English セクションが見つかれば、その中に限定
     english_start = 0
     for mh in EN_HEAD_RE.finditer(wikitext):
         if mh.start() < first_pos:
