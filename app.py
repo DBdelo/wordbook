@@ -89,7 +89,7 @@ HTML = r"""
 
       <div class="voicebox">
         <div>
-          <label>読み上げ音声（英語のみ）</label>
+          <label>読み上げ音声</label>
           <select id="voiceSelect"></select>
         </div>
         <div class="voicehint" id="voiceHint"></div>
@@ -641,8 +641,8 @@ def _draw_pdf_word_sheet(rows: List[Dict[str, str]]) -> bytes:
                 c.line(x0, y, x1, y)
 
         no_size = 10
-        word_base = 11
-        meaning_base = 9   # 右枠（単語）の標準を下げる
+        word_base = 16
+        meaning_base = 8   # 右枠（単語）の標準を下げる
         min_size = 6       # 最小 6
 
         for i in range(min(50, len(page_rows))):
@@ -839,3 +839,4 @@ def lookup():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5000"))
     app.run(host="0.0.0.0", port=port, debug=False)
+
