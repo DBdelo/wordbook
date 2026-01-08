@@ -5,7 +5,7 @@ import io
 import json
 import os
 import re
-from typing import List, Dict
+from typing import List, Dict, Tuple
 from urllib.parse import quote
 
 import requests
@@ -102,7 +102,7 @@ HTML = r"""
 
   let lastQueried = "";
   let debounceTimer = null;
-  let inflight = null; // AbortController
+  let inflight = null;
 
   function loadItems() {
     try {
@@ -178,7 +178,6 @@ HTML = r"""
     }
   }
 
-  // 入力停止後に自動検索
   wordEl.addEventListener("input", () => {
     if (debounceTimer) clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
@@ -316,7 +315,8 @@ def _draw_pdf_word_sheet(rows: List[Dict[str, str]]) -> bytes:
         return (s or "").replace("\r", " ").replace("\n", " ").strip()
 
     def text_width(font_name: str, size: float, s: str) -> float:
-        return pdfmetrics.stringWidth(s, font_name, size)
+        from reportlab.pdfbase import pdfmetrics as _pm
+        return _pm.stringWidth(s, font_name, size)
 
     def truncate_to_fit(font_name: str, size: float, s: str, max_w: float) -> str:
         s = clean(s)
@@ -447,23 +447,6 @@ def _fetch_wiktionary_raw(title: str) -> str:
     return txt
 
 
-def _extract_ja_translations(wikitext: str, limit: int = 6) -> List[str]:
-    if not wikitext:
-        return []
-    hits = re.findall(r"\{\{t\+?\|ja\|([^|}\n]+)", wikitext)
-    out: List[str] = []
-    seen = set()
-    for h in hits:
-        s = (h or "").strip()
-        if not s or s in seen:
-            continue
-        seen.add(s)
-        out.append(s)
-        if len(out) >= limit:
-            break
-    return out
-
-
 POS_MAP = {
     "Verb": "（動）",
     "Pronoun": "（代名）",
@@ -477,21 +460,53 @@ POS_MAP = {
     "Interjection": "（間投）",
 }
 
+POS_RE = re.compile(
+    r"(?m)^={3,6}\s*(Noun|Verb|Adjective|Adverb|Pronoun|Conjunction|Auxiliary verb|Preposition|Article|Interjection)\s*={3,6}\s*$"
+)
+EN_HEAD_RE = re.compile(r"(?m)^==\s*English\s*==\s*$")
+JA_T_RE = re.compile(r"\{\{t\+?\|ja\|([^|}\n]+)")
 
-def _extract_pos_from_english_section(wikitext: str) -> str:
+
+def _extract_ja_and_pos_nearby(wikitext: str, limit: int = 6) -> Tuple[str, List[str]]:
     if not wikitext:
-        return ""
-    m = re.search(r"(?ms)^==\s*English\s*==\s*(.*?)(?=^==[^=]|\Z)", wikitext)
-    if not m:
-        return ""
-    eng = m.group(1)
-    m2 = re.search(
-        r"(?m)^===\s*(Noun|Verb|Adjective|Adverb|Pronoun|Conjunction|Auxiliary verb|Preposition|Article|Interjection)\s*===\s*$",
-        eng,
-    )
-    if not m2:
-        return ""
-    return POS_MAP.get(m2.group(1), "")
+        return ("", [])
+
+    # 日本語訳の出現位置
+    matches = list(JA_T_RE.finditer(wikitext))
+    if not matches:
+        return ("", [])
+
+    first_pos = matches[0].start()
+
+    # まず日本語訳（ユニークで limit 件）
+    out: List[str] = []
+    seen = set()
+    for m in matches:
+        s = (m.group(1) or "").strip()
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        out.append(s)
+        if len(out) >= limit:
+            break
+
+    # 品詞：最初の日本語訳より「上」にある、一番近い品詞見出しを拾う
+    # ただし English セクションが見つかれば、その中に限定
+    english_start = 0
+    for mh in EN_HEAD_RE.finditer(wikitext):
+        if mh.start() < first_pos:
+            english_start = mh.start()
+        else:
+            break
+
+    region = wikitext[english_start:first_pos]
+
+    last_pos = ""
+    for mp in POS_RE.finditer(region):
+        last_pos = mp.group(1)
+
+    prefix = POS_MAP.get(last_pos, "") if last_pos else ""
+    return (prefix, out)
 
 
 def _lookup_case_insensitive_with_pos(word: str) -> str:
@@ -506,11 +521,10 @@ def _lookup_case_insensitive_with_pos(word: str) -> str:
 
     for v in variants:
         raw = _fetch_wiktionary_raw(v)
-        ja = _extract_ja_translations(raw)
-        if ja:
-            pos = _extract_pos_from_english_section(raw)
-            body = "、".join(ja)
-            return (pos + body) if pos else body
+        prefix, ja_list = _extract_ja_and_pos_nearby(raw, limit=6)
+        if ja_list:
+            body = "、".join(ja_list)
+            return (prefix + body) if prefix else body
 
     return ""
 
