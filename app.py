@@ -4,8 +4,11 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 from typing import List, Dict
+from urllib.parse import quote
 
+import requests
 from flask import Flask, Response, render_template_string, request
 
 app = Flask(__name__)
@@ -22,7 +25,7 @@ HTML = r"""
     .wrap{max-width:860px;margin:0 auto;}
     h1{font-size:22px;margin:0;}
     .card{background:#fff;border-radius:14px;box-shadow:0 6px 18px rgba(0,0,0,.06);padding:16px;margin-bottom:14px;}
-    form{display:grid;grid-template-columns:1fr 1fr auto;gap:10px;align-items:end;}
+    form{display:grid;grid-template-columns:1fr 1fr auto auto;gap:10px;align-items:end;}
     label{display:block;font-size:12px;color:#444;margin-bottom:6px;}
     input{width:100%;padding:10px 12px;border:1px solid #d7dbe7;border-radius:10px;font-size:14px;}
     button,.btn{appearance:none;border:0;border-radius:10px;padding:10px 14px;font-size:14px;cursor:pointer;text-decoration:none;display:inline-block}
@@ -35,6 +38,9 @@ HTML = r"""
     .del{background:#ef4444;}
     .muted{color:#6b7280;font-size:12px;margin-top:8px}
     .topbar{display:flex;gap:10px;flex-wrap:wrap;justify-content:space-between;align-items:center;margin-bottom:12px}
+    .hint{color:#6b7280;font-size:12px;margin-top:10px}
+    .smallbtn{background:#111827;}
+    .smallbtn:disabled{opacity:.5;cursor:not-allowed;}
   </style>
 </head>
 <body>
@@ -59,9 +65,13 @@ HTML = r"""
           <input id="meaning" autocomplete="off" required maxlength="200" />
         </div>
         <div>
+          <button class="smallbtn" id="btnLookup" type="button">翻訳</button>
+        </div>
+        <div>
           <button type="submit">記録</button>
         </div>
       </form>
+      <div class="hint" id="hint"></div>
       <div class="muted">データはこのブラウザ内に保存されます。</div>
     </div>
 
@@ -93,6 +103,8 @@ HTML = r"""
   const btnCsv = $("btnCsv");
   const btnPdf = $("btnPdf");
   const btnClear = $("btnClear");
+  const btnLookup = $("btnLookup");
+  const hint = $("hint");
 
   function loadItems() {
     try {
@@ -112,6 +124,10 @@ HTML = r"""
 
   function escapeHtml(s) {
     return s.replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#39;");
+  }
+
+  function setHint(s) {
+    hint.textContent = s || "";
   }
 
   function render() {
@@ -141,6 +157,7 @@ HTML = r"""
 
     wordEl.value = "";
     meaningEl.value = "";
+    setHint("");
     wordEl.focus();
 
     render();
@@ -207,6 +224,38 @@ HTML = r"""
     URL.revokeObjectURL(url);
   });
 
+  btnLookup.addEventListener("click", async () => {
+    const word = wordEl.value.trim();
+    if (!word) return;
+
+    btnLookup.disabled = true;
+    setHint("検索中…");
+
+    try {
+      const res = await fetch("/lookup", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({word})
+      });
+      if (!res.ok) {
+        setHint("失敗しました");
+        return;
+      }
+      const data = await res.json();
+      if (data && data.meaning) {
+        meaningEl.value = data.meaning;
+        setHint("");
+        meaningEl.focus();
+      } else {
+        setHint("見つかりませんでした");
+      }
+    } catch {
+      setHint("失敗しました");
+    } finally {
+      btnLookup.disabled = false;
+    }
+  });
+
   render();
 })();
 </script>
@@ -246,7 +295,6 @@ def _draw_pdf_word_sheet(rows: List[Dict[str, str]]) -> bytes:
     gap = 8 * mm
     half_w = (width - 2 * margin_x - gap) / 2
 
-    # No / word / 単語（wordと単語は同じ幅）
     no_w = 10 * mm
     text_w = (half_w - no_w) / 2
     word_w = text_w
@@ -258,10 +306,7 @@ def _draw_pdf_word_sheet(rows: List[Dict[str, str]]) -> bytes:
         return (s or "").replace("\r", " ").replace("\n", " ").strip()
 
     def text_width(font_name: str, size: float, s: str) -> float:
-        try:
-            return pdfmetrics.stringWidth(s, font_name, size)
-        except Exception:
-            return pdfmetrics.stringWidth(s, "Helvetica", size)
+        return pdfmetrics.stringWidth(s, font_name, size)
 
     def truncate_to_fit(font_name: str, size: float, s: str, max_w: float) -> str:
         s = clean(s)
@@ -307,8 +352,8 @@ def _draw_pdf_word_sheet(rows: List[Dict[str, str]]) -> bytes:
                 c.line(x0, y, x1, y)
 
         no_size = 10
-        meaning_base = 12
-        word_base = 16
+        meaning_base = 10
+        word_base = 11
         min_size = 6
 
         for i in range(min(50, len(page_rows))):
@@ -323,31 +368,11 @@ def _draw_pdf_word_sheet(rows: List[Dict[str, str]]) -> bytes:
             word = str(page_rows[i].get("word", ""))
             meaning = str(page_rows[i].get("meaning", ""))
 
-            # No（縮小しない）
             c.setFont(jp_font, no_size)
             c.drawString(x0 + pad, y_text, str(n))
 
-            # word（枠に入らなければ縮小→それでもダメなら末尾…）
-            draw_fit_text(
-                "Helvetica",
-                word_base,
-                min_size,
-                x0 + no_w + pad,
-                y_text,
-                word,
-                word_w - 2 * pad,
-            )
-
-            # 単語（枠に入らなければ縮小→それでもダメなら末尾…）
-            draw_fit_text(
-                jp_font,
-                meaning_base,
-                min_size,
-                x0 + no_w + word_w + pad,
-                y_text,
-                meaning,
-                meaning_w - 2 * pad,
-            )
+            draw_fit_text("Helvetica", word_base, min_size, x0 + no_w + pad, y_text, word, word_w - 2 * pad)
+            draw_fit_text(jp_font, meaning_base, min_size, x0 + no_w + word_w + pad, y_text, meaning, meaning_w - 2 * pad)
 
     cleaned: List[Dict[str, str]] = []
     for it in rows:
@@ -390,6 +415,65 @@ def export_pdf():
         mimetype="application/pdf",
         headers={"Content-Disposition": 'attachment; filename="wordbook.pdf"'},
     )
+
+
+def _fetch_wiktionary_raw(title: str) -> str:
+    t = title.strip()
+    if not t:
+        return ""
+    url = "https://en.wiktionary.org/wiki/" + quote(t) + "?action=raw"
+    r = requests.get(url, timeout=6, headers={"User-Agent": "wordbook-app/1.0"})
+    if r.status_code != 200:
+        return ""
+    txt = r.text or ""
+    m = re.match(r"(?is)^\s*#redirect\s*\[\[(.+?)\]\]", txt)
+    if m:
+        target = m.group(1).strip()
+        if target and target.lower() != t.lower():
+            url2 = "https://en.wiktionary.org/wiki/" + quote(target) + "?action=raw"
+            r2 = requests.get(url2, timeout=6, headers={"User-Agent": "wordbook-app/1.0"})
+            if r2.status_code == 200:
+                return r2.text or ""
+    return txt
+
+
+def _extract_ja_translations(wikitext: str, limit: int = 6) -> List[str]:
+    if not wikitext:
+        return []
+    # {{t|ja|...}}, {{t+|ja|...}} から日本語語形を抜く
+    hits = re.findall(r"\{\{t\+?\|ja\|([^|}\n]+)", wikitext)
+    out: List[str] = []
+    seen = set()
+    for h in hits:
+        s = (h or "").strip()
+        if not s:
+            continue
+        if s in seen:
+            continue
+        seen.add(s)
+        out.append(s)
+        if len(out) >= limit:
+            break
+    return out
+
+
+@app.post("/lookup")
+def lookup():
+    data = request.get_data(cache=False, as_text=True) or "{}"
+    try:
+        payload = json.loads(data)
+    except Exception:
+        payload = {}
+
+    word = str(payload.get("word", "")).strip()
+    if not word:
+        return Response(json.dumps({"meaning": ""}, ensure_ascii=False), mimetype="application/json")
+
+    raw = _fetch_wiktionary_raw(word)
+    ja = _extract_ja_translations(raw)
+
+    meaning = "、".join(ja) if ja else ""
+    return Response(json.dumps({"meaning": meaning}, ensure_ascii=False), mimetype="application/json")
 
 
 if __name__ == "__main__":
