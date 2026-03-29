@@ -19,7 +19,7 @@ HTML = r"""
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>英単語マスター</title>
+  <title>あなたの単語帳</title>
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
     body{
@@ -247,7 +247,7 @@ HTML = r"""
 
   <!-- ── Navigation ── -->
   <nav class="navbar">
-    <h1>英単語マスター</h1>
+    <h1>あなたの単語帳</h1>
     <div class="mode-tabs">
       <button class="mode-tab active" id="tabQuiz" type="button">単語テスト</button>
       <button class="mode-tab" id="tabRecord" type="button">記録モード</button>
