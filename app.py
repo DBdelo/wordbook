@@ -196,6 +196,26 @@ HTML = r"""
     .voicebox{margin-top:12px;display:grid;grid-template-columns:1fr;gap:8px;}
     .voicehint{color:#6b7280;font-size:12px}
 
+    /* ── Autocomplete ── */
+    .ac-wrap{position:relative;}
+    .ac-list{
+      position:absolute;left:0;right:0;top:100%;
+      background:#fff;border:1px solid #d7dbe7;border-top:none;
+      border-radius:0 0 10px 10px;
+      max-height:220px;overflow-y:auto;
+      z-index:50;box-shadow:0 8px 24px rgba(0,0,0,.1);
+      display:none;
+    }
+    .ac-list.open{display:block;}
+    .ac-item{
+      padding:10px 14px;font-size:14px;color:#1e293b;cursor:pointer;
+      border-bottom:1px solid #f1f5f9;
+      transition:background .1s;
+    }
+    .ac-item:last-child{border-bottom:none;}
+    .ac-item:hover,.ac-item.active{background:#eff6ff;color:#2563eb;}
+    .ac-item mark{background:none;color:#2563eb;font-weight:700;}
+
     /* ── Modal ── */
     .modal-overlay{
       position:fixed;inset:0;background:rgba(0,0,0,.45);
@@ -296,7 +316,7 @@ HTML = r"""
       </div>
       <div class="card">
         <form id="addForm">
-          <div><label>word</label><input id="word" autocomplete="off" required maxlength="80" /></div>
+          <div class="ac-wrap"><label>word</label><input id="word" autocomplete="off" required maxlength="80" /><div class="ac-list" id="acList"></div></div>
           <div><label>単語</label><input id="meaning" autocomplete="off" required maxlength="200" /></div>
           <div><button type="submit" class="rbtn-primary" style="border:0;border-radius:10px;padding:10px 14px;font-size:14px;cursor:pointer;color:#fff;background:#2563eb;">記録</button></div>
         </form>
@@ -547,7 +567,74 @@ HTML = r"""
     }catch(e){if(e&&e.name==="AbortError")return;setHint("失敗しました");}
   }
 
-  wordEl.addEventListener("input",()=>{if(debT)clearTimeout(debT);debT=setTimeout(()=>doLookup(wordEl.value),450);});
+  /* ── Autocomplete (Datamuse API) ── */
+  const acList=$("acList");
+  let acTimer=null,acFlight=null,acIdx=-1,acItems=[];
+
+  function acClose(){acList.classList.remove("open");acList.innerHTML="";acIdx=-1;acItems=[];}
+
+  function acHighlight(word,query){
+    const q=query.toLowerCase(),w=word;
+    const i=w.toLowerCase().indexOf(q);
+    if(i<0)return esc(w);
+    return esc(w.slice(0,i))+"<mark>"+esc(w.slice(i,i+q.length))+"</mark>"+esc(w.slice(i+q.length));
+  }
+
+  function acRender(words,query){
+    if(!words.length){acClose();return;}
+    acItems=words;acIdx=-1;
+    acList.innerHTML=words.map((w,i)=>'<div class="ac-item" data-ac="'+i+'">'+acHighlight(w,query)+'</div>').join("");
+    acList.classList.add("open");
+  }
+
+  function acSelect(word){
+    wordEl.value=word;acClose();lastQ="";doLookup(word);
+  }
+
+  async function acFetch(q){
+    q=q.trim();if(q.length<2){acClose();return;}
+    if(acFlight)acFlight.abort();acFlight=new AbortController();
+    try{
+      const r=await fetch("https://api.datamuse.com/sug?s="+encodeURIComponent(q)+"&max=8",{signal:acFlight.signal});
+      if(!r.ok){acClose();return;}
+      const data=await r.json();
+      const words=data.map(d=>d.word).filter(w=>w&&/^[a-zA-Z\s'-]+$/.test(w)).slice(0,8);
+      acRender(words,q);
+    }catch(e){if(e&&e.name!=="AbortError")acClose();}
+  }
+
+  acList.addEventListener("click",e=>{
+    const el=e.target.closest(".ac-item");if(!el)return;
+    const i=Number(el.getAttribute("data-ac"));
+    if(i>=0&&i<acItems.length)acSelect(acItems[i]);
+  });
+
+  wordEl.addEventListener("input",()=>{
+    if(debT)clearTimeout(debT);
+    debT=setTimeout(()=>doLookup(wordEl.value),450);
+    if(acTimer)clearTimeout(acTimer);
+    acTimer=setTimeout(()=>acFetch(wordEl.value),200);
+  });
+
+  wordEl.addEventListener("keydown",e=>{
+    if(!acList.classList.contains("open"))return;
+    if(e.key==="ArrowDown"){
+      e.preventDefault();acIdx=Math.min(acIdx+1,acItems.length-1);acUpdateActive();
+    }else if(e.key==="ArrowUp"){
+      e.preventDefault();acIdx=Math.max(acIdx-1,-1);acUpdateActive();
+    }else if((e.key==="Enter"||e.key==="Tab")&&acIdx>=0){
+      e.preventDefault();acSelect(acItems[acIdx]);
+    }else if(e.key==="Escape"){acClose();}
+  });
+
+  function acUpdateActive(){
+    acList.querySelectorAll(".ac-item").forEach((el,i)=>{
+      el.classList.toggle("active",i===acIdx);
+      if(i===acIdx)el.scrollIntoView({block:"nearest"});
+    });
+  }
+
+  document.addEventListener("click",e=>{if(!e.target.closest(".ac-wrap"))acClose();});
 
   form.addEventListener("submit",e=>{
     e.preventDefault();const w=wordEl.value.trim(),m=meaningEl.value.trim();if(!w||!m)return;
