@@ -1,0 +1,545 @@
+
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>英単語マスター</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{
+      font-family:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,"Noto Sans JP",sans-serif;
+      margin:0;min-height:100vh;
+      transition:background .4s ease;
+    }
+    body.mode-quiz-en{background:linear-gradient(135deg,#dbeafe 0%,#bfdbfe 100%);}
+    body.mode-quiz-ja{background:linear-gradient(135deg,#d1fae5 0%,#a7f3d0 100%);}
+    body.mode-record{background:#f6f7fb;}
+
+    /* ── Navbar ── */
+    .navbar{
+      display:flex;justify-content:space-between;align-items:center;
+      padding:12px 20px;
+      background:rgba(255,255,255,.88);
+      backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
+      border-bottom:1px solid rgba(0,0,0,.07);
+      position:sticky;top:0;z-index:100;
+    }
+    .navbar h1{font-size:18px;font-weight:800;color:#1e293b;letter-spacing:-.3px;}
+    .mode-tabs{display:flex;background:#e2e8f0;border-radius:10px;padding:3px;gap:2px;}
+    .mode-tab{
+      padding:8px 18px;border-radius:8px;font-size:13px;font-weight:600;
+      cursor:pointer;border:none;background:transparent;color:#64748b;transition:all .2s;
+    }
+    .mode-tab.active{background:#fff;color:#1e293b;box-shadow:0 1px 4px rgba(0,0,0,.1);}
+
+    /* ── Quiz Mode ── */
+    #quizView{display:none;}
+    #recordView{display:none;}
+
+    .quiz-container{
+      display:flex;flex-direction:column;align-items:center;
+      min-height:calc(100vh - 56px);padding:24px 20px 40px;
+    }
+    .quiz-header{
+      display:flex;gap:14px;align-items:center;flex-wrap:wrap;
+      justify-content:center;margin-bottom:20px;width:100%;max-width:520px;
+    }
+    .quiz-lang-toggle{
+      display:flex;align-items:center;gap:6px;
+      background:rgba(255,255,255,.65);padding:6px;border-radius:12px;
+    }
+    .lang-btn{
+      padding:8px 14px;border-radius:8px;font-size:13px;font-weight:600;
+      cursor:pointer;border:2px solid transparent;
+      background:transparent;color:#64748b;transition:all .2s;
+    }
+    .lang-btn.sel-en{background:#3b82f6;color:#fff;border-color:#3b82f6;}
+    .lang-btn.sel-ja{background:#10b981;color:#fff;border-color:#10b981;}
+
+    .quiz-stats{
+      display:flex;gap:10px;font-size:14px;font-weight:600;
+    }
+    .stat-badge{
+      display:flex;align-items:center;gap:6px;
+      padding:6px 14px;border-radius:20px;
+      background:rgba(255,255,255,.7);
+    }
+    .stat-badge.good{color:#059669;}
+    .stat-badge.bad{color:#dc2626;}
+    .stat-badge .cnt{font-size:20px;font-weight:800;}
+
+    .quiz-progress-wrap{width:100%;max-width:520px;margin-bottom:20px;text-align:center;}
+    .quiz-progress-text{font-size:13px;color:rgba(0,0,0,.45);font-weight:700;margin-bottom:6px;}
+    .quiz-progress{height:6px;background:rgba(255,255,255,.5);border-radius:3px;overflow:hidden;}
+    .quiz-progress-bar{height:100%;border-radius:3px;transition:width .35s ease;}
+    body.mode-quiz-en .quiz-progress-bar{background:#3b82f6;}
+    body.mode-quiz-ja .quiz-progress-bar{background:#10b981;}
+
+    .quiz-card{
+      background:#fff;border-radius:22px;
+      box-shadow:0 12px 44px rgba(0,0,0,.08);
+      padding:48px 36px;text-align:center;
+      max-width:520px;width:100%;margin-bottom:24px;
+      min-height:180px;display:flex;flex-direction:column;
+      align-items:center;justify-content:center;
+      animation:cardIn .3s ease both;
+    }
+    @keyframes cardIn{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+
+    .quiz-label{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px;opacity:.55;}
+    .quiz-word{font-size:34px;font-weight:800;color:#1e293b;word-break:break-word;line-height:1.3;}
+    .quiz-answer-divider{width:60px;height:2px;background:#e2e8f0;margin:18px 0;border-radius:1px;}
+    .quiz-answer-label{font-size:12px;font-weight:700;letter-spacing:.5px;margin-bottom:6px;opacity:.5;}
+    .quiz-answer{
+      font-size:24px;font-weight:700;color:#475569;word-break:break-word;
+      animation:fadeUp .3s ease both;line-height:1.4;
+    }
+    @keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+
+    .quiz-speak{
+      margin-top:14px;background:#f1f5f9;border:none;border-radius:10px;
+      padding:8px 18px;font-size:14px;cursor:pointer;color:#475569;transition:background .2s;
+    }
+    .quiz-speak:hover{background:#e2e8f0;}
+
+    .quiz-buttons{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;}
+    .qbtn{
+      padding:15px 36px;border-radius:14px;font-size:16px;font-weight:700;
+      border:none;cursor:pointer;transition:all .15s;min-width:140px;
+    }
+    .qbtn:active{transform:scale(.96);}
+    .qbtn-good{background:#10b981;color:#fff;}
+    .qbtn-good:hover{background:#059669;}
+    .qbtn-bad{background:#ef4444;color:#fff;}
+    .qbtn-bad:hover{background:#dc2626;}
+    .qbtn-next{background:#3b82f6;color:#fff;}
+    body.mode-quiz-ja .qbtn-next{background:#10b981;}
+    .qbtn-next:hover{filter:brightness(.92);}
+    .qbtn-restart{background:#6366f1;color:#fff;}
+    .qbtn-restart:hover{background:#4f46e5;}
+    .qbtn-retry{background:#f59e0b;color:#fff;}
+    .qbtn-retry:hover{background:#d97706;}
+    .qbtn-goto{background:#64748b;color:#fff;}
+    .qbtn-goto:hover{background:#475569;}
+
+    .quiz-empty{text-align:center;color:#64748b;font-size:16px;line-height:2;}
+    .quiz-empty .big-icon{font-size:52px;margin-bottom:8px;}
+
+    .quiz-complete{text-align:center;}
+    .quiz-complete .big-icon{font-size:52px;margin-bottom:10px;}
+    .quiz-complete h2{font-size:24px;margin-bottom:8px;color:#1e293b;}
+    .result-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:18px 0;}
+    .result-cell{padding:18px 12px;border-radius:14px;text-align:center;}
+    .result-cell.good{background:#d1fae5;color:#065f46;}
+    .result-cell.bad{background:#fee2e2;color:#991b1b;}
+    .result-cell .big{font-size:36px;font-weight:800;}
+    .result-cell .lbl{font-size:12px;margin-top:4px;font-weight:600;}
+    .pct{font-size:22px;font-weight:800;color:#1e293b;margin:8px 0 18px;}
+    .result-actions{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;}
+
+    .shortcut-hint{
+      margin-top:18px;font-size:12px;color:rgba(0,0,0,.3);
+      text-align:center;user-select:none;
+    }
+    .shortcut-hint kbd{
+      display:inline-block;padding:2px 7px;border-radius:4px;
+      background:rgba(255,255,255,.6);font-size:11px;font-family:inherit;
+      border:1px solid rgba(0,0,0,.1);
+    }
+
+    /* ── Record Mode (existing, refined) ── */
+    .wrap{max-width:860px;margin:0 auto;padding:0 20px;}
+    .card{background:#fff;border-radius:14px;box-shadow:0 6px 18px rgba(0,0,0,.06);padding:16px;margin-bottom:14px;}
+    form#addForm{display:grid;grid-template-columns:1fr 1fr auto;gap:10px;align-items:end;}
+    label{display:block;font-size:12px;color:#444;margin-bottom:6px;}
+    input,select{width:100%;padding:10px 12px;border:1px solid #d7dbe7;border-radius:10px;font-size:14px;background:#fff;}
+    .rbtn{
+      appearance:none;border:0;border-radius:10px;padding:10px 14px;font-size:14px;
+      cursor:pointer;display:inline-flex;align-items:center;gap:8px;
+      background:#111827;color:#fff;text-decoration:none;
+    }
+    .rbtn-primary{background:#2563eb;color:#fff;}
+    .row{display:flex;gap:10px;flex-wrap:wrap}
+    table{width:100%;border-collapse:collapse;}
+    th,td{padding:10px 8px;border-bottom:1px solid #edf0f6;font-size:14px;vertical-align:top}
+    th{color:#374151;text-align:left;font-weight:600;}
+    .del{
+      appearance:none;border:0;border-radius:10px;padding:8px 12px;
+      font-size:13px;cursor:pointer;background:#ef4444;color:#fff;
+    }
+    .muted{color:#6b7280;font-size:12px;margin-top:8px}
+    .topbar{display:flex;gap:10px;flex-wrap:wrap;justify-content:space-between;align-items:center;margin-bottom:12px;padding-top:16px;}
+    .hint{color:#6b7280;font-size:12px;margin-top:10px;min-height:1em}
+    .speak{
+      background:#111827;padding:8px 10px;border-radius:10px;
+      color:#fff;font-size:13px;line-height:1;border:none;cursor:pointer;
+    }
+    .speak:disabled{opacity:.5;cursor:not-allowed;}
+    .wordcell{display:flex;align-items:center;gap:10px}
+    .wordtext{font-weight:600}
+    .voicebox{margin-top:12px;display:grid;grid-template-columns:1fr;gap:8px;}
+    .voicehint{color:#6b7280;font-size:12px}
+
+    /* ── Responsive ── */
+    @media(max-width:600px){
+      .navbar{padding:10px 14px;}
+      .navbar h1{font-size:15px;}
+      .mode-tab{padding:7px 12px;font-size:12px;}
+      form#addForm{grid-template-columns:1fr;gap:8px;}
+      .quiz-word{font-size:26px;}
+      .quiz-answer{font-size:20px;}
+      .quiz-card{padding:36px 22px;border-radius:18px;}
+      .qbtn{min-width:120px;padding:13px 24px;font-size:15px;}
+      .lang-btn{padding:7px 10px;font-size:12px;}
+      .stat-badge{padding:5px 10px;font-size:13px;}
+      .stat-badge .cnt{font-size:17px;}
+      .shortcut-hint{display:none;}
+    }
+  </style>
+</head>
+<body class="mode-quiz-en">
+
+  <!-- ── Navigation ── -->
+  <nav class="navbar">
+    <h1>英単語マスター</h1>
+    <div class="mode-tabs">
+      <button class="mode-tab active" id="tabQuiz" type="button">単語テスト</button>
+      <button class="mode-tab" id="tabRecord" type="button">記録モード</button>
+    </div>
+  </nav>
+
+  <!-- ── Quiz View ── -->
+  <div id="quizView">
+    <div class="quiz-container">
+      <div class="quiz-header">
+        <div class="quiz-lang-toggle">
+          <button class="lang-btn sel-en" id="toggleEn" type="button">英語→日本語</button>
+          <button class="lang-btn" id="toggleJa" type="button">日本語→英語</button>
+        </div>
+        <div class="quiz-stats">
+          <div class="stat-badge good"><span>覚えた</span><span class="cnt" id="cntGood">0</span></div>
+          <div class="stat-badge bad"><span>忘れた</span><span class="cnt" id="cntBad">0</span></div>
+        </div>
+      </div>
+
+      <div class="quiz-progress-wrap">
+        <div class="quiz-progress-text" id="progText"></div>
+        <div class="quiz-progress"><div class="quiz-progress-bar" id="progBar" style="width:0%"></div></div>
+      </div>
+
+      <div id="quizArea"></div>
+
+      <div class="shortcut-hint" id="shortcutHint">
+        <kbd>→</kbd> 覚えた　<kbd>←</kbd> 忘れた　<kbd>Space</kbd> 次へ
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Record View ── -->
+  <div id="recordView">
+    <div class="wrap">
+      <div class="topbar">
+        <h2 style="font-size:20px;margin:0;">単語の記録</h2>
+        <div class="row">
+          <button class="rbtn" id="btnCsv" type="button">CSV</button>
+          <button class="rbtn" id="btnPdf" type="button">PDF</button>
+          <button class="rbtn" id="btnClear" type="button" style="background:#6b7280">全消去</button>
+        </div>
+      </div>
+      <div class="card">
+        <form id="addForm">
+          <div><label>word</label><input id="word" autocomplete="off" required maxlength="80" /></div>
+          <div><label>単語</label><input id="meaning" autocomplete="off" required maxlength="200" /></div>
+          <div><button type="submit" class="rbtn-primary" style="border:0;border-radius:10px;padding:10px 14px;font-size:14px;cursor:pointer;color:#fff;background:#2563eb;">記録</button></div>
+        </form>
+        <div class="voicebox">
+          <div><label>読み上げ音声</label><select id="voiceSelect"></select></div>
+          <div class="voicehint" id="voiceHint"></div>
+        </div>
+        <div class="hint" id="hint"></div>
+        <div class="muted">データはこのブラウザ内に保存されます。</div>
+      </div>
+      <div class="card">
+        <table>
+          <thead><tr><th style="width:34%">word</th><th>単語</th><th style="width:90px">操作</th></tr></thead>
+          <tbody id="tbody"><tr><td colspan="3" style="color:#6b7280;padding:16px 8px">まだありません。</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+<script>
+(() => {
+  const KEY  = "wordbook_items_v1";
+  const VKEY = "wordbook_voice_v1_en";
+  const LKEY = "wordbook_quiz_lang_v1";
+
+  const $ = id => document.getElementById(id);
+
+  /* ── Shared helpers ── */
+  function loadItems(){
+    try{const r=localStorage.getItem(KEY);if(!r)return[];const v=JSON.parse(r);
+    if(!Array.isArray(v))return[];return v.filter(x=>x&&typeof x.word==="string"&&typeof x.meaning==="string");}catch{return[];}
+  }
+  function saveItems(a){localStorage.setItem(KEY,JSON.stringify(a));}
+  function esc(s){return s.replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#39;");}
+
+  /* ── Speech ── */
+  function canSpeak(){return !!(window.speechSynthesis&&window.SpeechSynthesisUtterance);}
+  function voices(){try{return(window.speechSynthesis&&window.speechSynthesis.getVoices)?window.speechSynthesis.getVoices():[];}catch{return[];}}
+  function isEn(v){return(v&&v.lang||"").toLowerCase().startsWith("en");}
+  function vKey(v){return[v.name||"",v.lang||"",v.voiceURI||""].join("|");}
+  function loadVC(){try{return localStorage.getItem(VKEY)||"";}catch{return"";}}
+  function saveVC(k){try{localStorage.setItem(VKEY,k||"");}catch{}}
+
+  const voiceSelect=$("voiceSelect"),voiceHint=$("voiceHint");
+
+  function rebuildVoiceSelect(){
+    voiceSelect.innerHTML="";
+    if(!canSpeak()){voiceSelect.disabled=true;const o=document.createElement("option");o.textContent="非対応";voiceSelect.appendChild(o);return;}
+    const vs=voices().filter(isEn);
+    if(!vs.length){voiceSelect.disabled=true;const o=document.createElement("option");o.textContent="英語音声なし";voiceSelect.appendChild(o);return;}
+    voiceSelect.disabled=false;const saved=loadVC();let sel=saved||vKey(vs[0]);
+    vs.forEach(v=>{const o=document.createElement("option");o.value=vKey(v);o.textContent=v.name+" ("+v.lang+")";if(o.value===sel)o.selected=true;voiceSelect.appendChild(o);});
+    saveVC(voiceSelect.value||"");
+    const sv=vs.find(v=>vKey(v)===voiceSelect.value)||null;
+    voiceHint.textContent=sv?("現在："+sv.name+"（"+sv.lang+"）"):"";
+  }
+  function getSelVoice(){const vs=voices().filter(isEn);const k=voiceSelect.value||loadVC();return vs.find(x=>vKey(x)===k)||(vs[0]||null);}
+  function speakWord(w){
+    if(!canSpeak())return;try{window.speechSynthesis.cancel();}catch{}
+    const u=new SpeechSynthesisUtterance(w);const v=getSelVoice();
+    if(v)u.voice=v;else u.lang="en-US";u.rate=1;u.pitch=1;window.speechSynthesis.speak(u);
+  }
+  voiceSelect.addEventListener("change",()=>{saveVC(voiceSelect.value||"");const v=getSelVoice();voiceHint.textContent=v?("現在："+v.name+"（"+v.lang+"）"):"";});
+  if(canSpeak())window.speechSynthesis.onvoiceschanged=()=>{rebuildVoiceSelect();renderTable();};
+  rebuildVoiceSelect();
+
+  /* ═══════════════════════════════════════
+     MODE MANAGEMENT
+     ═══════════════════════════════════════ */
+  const tabQuiz=$("tabQuiz"),tabRecord=$("tabRecord");
+  const quizView=$("quizView"),recordView=$("recordView");
+  let curMode="quiz";
+
+  function switchMode(m){
+    curMode=m;
+    tabQuiz.classList.toggle("active",m==="quiz");
+    tabRecord.classList.toggle("active",m==="record");
+    if(m==="quiz"){
+      quizView.style.display="";recordView.style.display="none";
+      updateBg();resetQuiz();
+    }else{
+      quizView.style.display="none";recordView.style.display="";
+      document.body.className="mode-record";renderTable();
+    }
+  }
+  tabQuiz.addEventListener("click",()=>switchMode("quiz"));
+  tabRecord.addEventListener("click",()=>switchMode("record"));
+
+  /* ═══════════════════════════════════════
+     QUIZ MODE
+     ═══════════════════════════════════════ */
+  const quizArea=$("quizArea");
+  const cntGood=$("cntGood"),cntBad=$("cntBad");
+  const progBar=$("progBar"),progText=$("progText");
+  const toggleEn=$("toggleEn"),toggleJa=$("toggleJa");
+
+  let qLang=localStorage.getItem(LKEY)||"en";
+  let queue=[],qIdx=0,good=0,bad=0,forgot=[],answered=false;
+
+  function updateBg(){document.body.className=qLang==="en"?"mode-quiz-en":"mode-quiz-ja";}
+  function updateLangBtns(){
+    toggleEn.className="lang-btn"+(qLang==="en"?" sel-en":"");
+    toggleJa.className="lang-btn"+(qLang==="ja"?" sel-ja":"");
+  }
+
+  function setLang(l){qLang=l;localStorage.setItem(LKEY,l);updateLangBtns();updateBg();resetQuiz();}
+  toggleEn.addEventListener("click",()=>setLang("en"));
+  toggleJa.addEventListener("click",()=>setLang("ja"));
+  updateLangBtns();
+
+  function shuffle(a){const b=[...a];for(let i=b.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[b[i],b[j]]=[b[j],b[i]];}return b;}
+
+  function resetQuiz(){
+    queue=shuffle(loadItems());qIdx=0;good=0;bad=0;forgot=[];answered=false;
+    updateStats();renderQ();
+  }
+  function updateStats(){
+    cntGood.textContent=good;cntBad.textContent=bad;
+    const tot=queue.length,done=qIdx;
+    progBar.style.width=tot>0?((done/tot)*100)+"%":"0%";
+    progText.textContent=tot>0?(done+" / "+tot):"";
+  }
+
+  function renderQ(){
+    const items=loadItems();
+    if(items.length===0){
+      quizArea.innerHTML='<div class="quiz-card"><div class="quiz-empty">'
+        +'<div class="big-icon">📚</div>'
+        +'<p>単語がまだ登録されていません。</p>'
+        +'<p style="margin-top:8px">「記録モード」で単語を追加しましょう！</p>'
+        +'<button class="qbtn qbtn-goto" type="button" id="qGoRecord" style="margin-top:18px">記録モードへ</button>'
+        +'</div></div>';
+      progText.textContent="";progBar.style.width="0%";
+      return;
+    }
+    if(queue.length===0){resetQuiz();return;}
+
+    if(qIdx>=queue.length){
+      const tot=queue.length;
+      const pct=tot>0?Math.round((good/tot)*100):0;
+      const icon=pct>=80?"🎉":pct>=50?"👍":"💪";
+      const hasForgot=forgot.length>0;
+      quizArea.innerHTML='<div class="quiz-card"><div class="quiz-complete">'
+        +'<div class="big-icon">'+icon+'</div>'
+        +'<h2>テスト完了！</h2>'
+        +'<div class="result-grid">'
+        +'<div class="result-cell good"><div class="big">'+good+'</div><div class="lbl">覚えた</div></div>'
+        +'<div class="result-cell bad"><div class="big">'+bad+'</div><div class="lbl">忘れた</div></div>'
+        +'</div>'
+        +'<div class="pct">正答率 '+pct+'%</div>'
+        +'<div class="result-actions">'
+        +'<button class="qbtn qbtn-restart" type="button" id="qRestart">もう一度</button>'
+        +(hasForgot?'<button class="qbtn qbtn-retry" type="button" id="qRetry">忘れた単語だけ ('+forgot.length+')</button>':'')
+        +'</div>'
+        +'</div></div>';
+      return;
+    }
+
+    const it=queue[qIdx];
+    const question=qLang==="en"?it.word:it.meaning;
+    const answer=qLang==="en"?it.meaning:it.word;
+    const qLabel=qLang==="en"?"English":"日本語";
+    const aLabel=qLang==="en"?"日本語":"English";
+    const showSpeakQ=qLang==="en"&&canSpeak()&&!voiceSelect.disabled;
+    const showSpeakA=qLang==="ja"&&canSpeak()&&!voiceSelect.disabled;
+
+    if(!answered){
+      quizArea.innerHTML='<div class="quiz-card">'
+        +'<div class="quiz-label">'+qLabel+'</div>'
+        +'<div class="quiz-word">'+esc(question)+'</div>'
+        +(showSpeakQ?'<button class="quiz-speak" type="button" id="qSpeak">🔊 読み上げ</button>':'')
+        +'</div>'
+        +'<div class="quiz-buttons">'
+        +'<button class="qbtn qbtn-bad" type="button" id="qBad">忘れた</button>'
+        +'<button class="qbtn qbtn-good" type="button" id="qGood">覚えた</button>'
+        +'</div>';
+    }else{
+      quizArea.innerHTML='<div class="quiz-card">'
+        +'<div class="quiz-label">'+qLabel+'</div>'
+        +'<div class="quiz-word">'+esc(question)+'</div>'
+        +'<div class="quiz-answer-divider"></div>'
+        +'<div class="quiz-answer-label">'+aLabel+'</div>'
+        +'<div class="quiz-answer">'+esc(answer)+'</div>'
+        +((showSpeakQ||showSpeakA)?'<button class="quiz-speak" type="button" id="qSpeak">🔊 読み上げ</button>':'')
+        +'</div>'
+        +'<div class="quiz-buttons">'
+        +'<button class="qbtn qbtn-next" type="button" id="qNext">次へ →</button>'
+        +'</div>';
+    }
+  }
+
+  quizArea.addEventListener("click",e=>{
+    const t=e.target;
+    if(t.id==="qGood"){good++;answered=true;updateStats();renderQ();}
+    if(t.id==="qBad"){bad++;forgot.push(queue[qIdx]);answered=true;updateStats();renderQ();}
+    if(t.id==="qNext"){qIdx++;answered=false;updateStats();renderQ();}
+    if(t.id==="qRestart"){resetQuiz();}
+    if(t.id==="qRetry"){queue=shuffle(forgot);qIdx=0;good=0;bad=0;forgot=[];answered=false;updateStats();renderQ();}
+    if(t.id==="qGoRecord"){switchMode("record");}
+    if(t.id==="qSpeak"){
+      const it=queue[qIdx];
+      if(it)speakWord(it.word);
+    }
+  });
+
+  document.addEventListener("keydown",e=>{
+    if(curMode!=="quiz")return;
+    if(document.activeElement&&(document.activeElement.tagName==="INPUT"||document.activeElement.tagName==="SELECT"||document.activeElement.tagName==="TEXTAREA"))return;
+    const items=loadItems();if(!items.length)return;
+    if(qIdx>=queue.length)return;
+
+    if(!answered){
+      if(e.key==="ArrowRight"){e.preventDefault();good++;answered=true;updateStats();renderQ();}
+      if(e.key==="ArrowLeft"){e.preventDefault();bad++;forgot.push(queue[qIdx]);answered=true;updateStats();renderQ();}
+    }else{
+      if(e.key===" "||e.key==="Enter"||e.key==="ArrowRight"||e.key==="ArrowLeft"){e.preventDefault();qIdx++;answered=false;updateStats();renderQ();}
+    }
+  });
+
+  /* ═══════════════════════════════════════
+     RECORD MODE (existing logic preserved)
+     ═══════════════════════════════════════ */
+  const tbody=$("tbody"),form=$("addForm"),wordEl=$("word"),meaningEl=$("meaning");
+  const btnCsv=$("btnCsv"),btnPdf=$("btnPdf"),btnClear=$("btnClear"),hint=$("hint");
+  let lastQ="",debT=null,inflight=null;
+
+  function setHint(s){hint.textContent=s||"";}
+
+  function renderTable(){
+    const items=loadItems();
+    if(!items.length){tbody.innerHTML='<tr><td colspan="3" style="color:#6b7280;padding:16px 8px">まだありません。</td></tr>';return;}
+    const ok=canSpeak()&&!voiceSelect.disabled;
+    tbody.innerHTML=items.map((it,i)=>'<tr><td><div class="wordcell">'
+      +'<button class="speak" type="button" data-speak="'+i+'"'+(ok?"":" disabled")+' title="'+(ok?"読み上げ":"英語音声なし")+'">🔊</button>'
+      +'<span class="wordtext">'+esc(it.word)+'</span></div></td>'
+      +'<td>'+esc(it.meaning)+'</td>'
+      +'<td><button class="del" type="button" data-del="'+i+'">削除</button></td></tr>').join("");
+  }
+
+  async function doLookup(w){
+    w=w.trim();if(!w){setHint("");return;}if(w===lastQ)return;lastQ=w;
+    if(inflight)inflight.abort();inflight=new AbortController();setHint("検索中…");
+    try{
+      const r=await fetch("/lookup",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({word:w}),signal:inflight.signal});
+      if(!r.ok){setHint("失敗しました");return;}const d=await r.json();
+      if(d&&d.meaning){meaningEl.value=d.meaning;setHint("");}else setHint("見つかりませんでした");
+    }catch(e){if(e&&e.name==="AbortError")return;setHint("失敗しました");}
+  }
+
+  wordEl.addEventListener("input",()=>{if(debT)clearTimeout(debT);debT=setTimeout(()=>doLookup(wordEl.value),450);});
+
+  form.addEventListener("submit",e=>{
+    e.preventDefault();const w=wordEl.value.trim(),m=meaningEl.value.trim();if(!w||!m)return;
+    const items=loadItems();items.push({word:w,meaning:m});saveItems(items);
+    wordEl.value="";meaningEl.value="";lastQ="";setHint("");wordEl.focus();renderTable();
+  });
+
+  tbody.addEventListener("click",e=>{
+    const sb=e.target.closest("button[data-speak]");
+    if(sb){const i=Number(sb.getAttribute("data-speak"));const items=loadItems();if(Number.isInteger(i)&&i>=0&&i<items.length)speakWord(items[i].word);return;}
+    const db=e.target.closest("button[data-del]");if(!db)return;
+    const i=Number(db.getAttribute("data-del"));const items=loadItems();
+    if(Number.isInteger(i)&&i>=0&&i<items.length){items.splice(i,1);saveItems(items);renderTable();}
+  });
+
+  btnClear.addEventListener("click",()=>{if(!confirm("全ての単語を削除しますか？"))return;saveItems([]);renderTable();});
+
+  btnCsv.addEventListener("click",()=>{
+    const items=loadItems();const bom="\uFEFF";
+    const lines=["word,meaning"].concat(items.map(it=>{
+      const w=String(it.word).replaceAll('"','""'),m=String(it.meaning).replaceAll('"','""');return '"'+w+'","'+m+'"';
+    }));
+    const csv=bom+lines.join("\r\n");const blob=new Blob([csv],{type:"text/csv;charset=utf-8"});
+    const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download="wordbook.csv";
+    document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);
+  });
+
+  btnPdf.addEventListener("click",async()=>{
+    const items=loadItems();
+    const r=await fetch("/export.pdf",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({items})});
+    if(!r.ok){alert("PDF出力に失敗しました");return;}
+    const blob=await r.blob();const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");a.href=url;a.download="wordbook.pdf";
+    document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);
+  });
+
+  /* ── Boot ── */
+  renderTable();
+  switchMode("quiz");
+})();
+</script>
+</body>
+</html>
