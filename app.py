@@ -196,6 +196,36 @@ HTML = r"""
     .voicebox{margin-top:12px;display:grid;grid-template-columns:1fr;gap:8px;}
     .voicehint{color:#6b7280;font-size:12px}
 
+    /* ── Modal ── */
+    .modal-overlay{
+      position:fixed;inset:0;background:rgba(0,0,0,.45);
+      display:flex;align-items:center;justify-content:center;
+      z-index:200;padding:20px;animation:fadeIn .2s ease;
+    }
+    @keyframes fadeIn{from{opacity:0}to{opacity:1}}
+    .modal-box{
+      background:#fff;border-radius:18px;padding:28px 24px;
+      max-width:400px;width:100%;box-shadow:0 16px 48px rgba(0,0,0,.15);
+      animation:cardIn .25s ease both;
+    }
+    .modal-box h3{font-size:18px;font-weight:700;color:#1e293b;margin-bottom:12px;}
+    .modal-box p{font-size:14px;color:#475569;line-height:1.7;margin-bottom:16px;}
+    .modal-box .highlight{font-weight:700;color:#1e293b;}
+    .modal-actions{display:flex;flex-direction:column;gap:10px;}
+    .modal-btn{
+      width:100%;padding:14px 16px;border-radius:12px;font-size:15px;font-weight:700;
+      border:none;cursor:pointer;text-align:left;transition:filter .15s;
+      display:flex;align-items:center;gap:12px;
+    }
+    .modal-btn:active{filter:brightness(.9);}
+    .modal-btn .modal-icon{font-size:22px;flex-shrink:0;}
+    .modal-btn .modal-text{display:flex;flex-direction:column;}
+    .modal-btn .modal-title{font-size:15px;font-weight:700;}
+    .modal-btn .modal-desc{font-size:12px;font-weight:400;opacity:.75;margin-top:2px;}
+    .modal-btn-add{background:#059669;color:#fff;}
+    .modal-btn-replace{background:#dc2626;color:#fff;}
+    .modal-btn-cancel{background:#e2e8f0;color:#475569;justify-content:center;}
+
     /* ── Responsive ── */
     @media(max-width:600px){
       .navbar{padding:10px 14px;}
@@ -286,6 +316,7 @@ HTML = r"""
     </div>
   </div>
 
+<div id="modalRoot"></div>
 <script>
 (() => {
   const KEY  = "wordbook_items_v1";
@@ -539,6 +570,21 @@ HTML = r"""
 
   btnImport.addEventListener("click",()=>{csvFile.value="";csvFile.click();});
 
+  const modalRoot=$("modalRoot");
+
+  function showModal(html){modalRoot.innerHTML=html;}
+  function closeModal(){modalRoot.innerHTML="";}
+
+  function showToast(msg){
+    const el=document.createElement("div");
+    el.textContent=msg;
+    Object.assign(el.style,{position:"fixed",bottom:"24px",left:"50%",transform:"translateX(-50%)",
+      background:"#1e293b",color:"#fff",padding:"12px 24px",borderRadius:"12px",fontSize:"15px",
+      fontWeight:"600",zIndex:"300",boxShadow:"0 4px 16px rgba(0,0,0,.2)",animation:"fadeUp .3s ease both"});
+    document.body.appendChild(el);
+    setTimeout(()=>{el.style.opacity="0";el.style.transition="opacity .3s";setTimeout(()=>el.remove(),300);},2200);
+  }
+
   csvFile.addEventListener("change",()=>{
     const f=csvFile.files&&csvFile.files[0];if(!f)return;
     const reader=new FileReader();
@@ -546,20 +592,68 @@ HTML = r"""
       let text=reader.result||"";
       if(text.charCodeAt(0)===0xFEFF)text=text.slice(1);
       const rows=parseCSV(text);
-      if(!rows.length){alert("読み込める単語がありませんでした。\nCSVは word,meaning の形式にしてください。");return;}
+      if(!rows.length){showToast("読み込める単語がありませんでした");return;}
       const existing=loadItems();
+      if(existing.length===0){
+        saveItems(rows);renderTable();
+        showToast(rows.length+"件の単語を追加しました");return;
+      }
       const existSet=new Set(existing.map(x=>x.word.toLowerCase()));
       const fresh=rows.filter(r=>!existSet.has(r.word.toLowerCase()));
       const dupes=rows.length-fresh.length;
-      let msg=rows.length+"件の単語が見つかりました。";
-      if(dupes>0)msg+="\n（うち"+dupes+"件は既に登録済みのため追加しません）";
-      if(fresh.length===0){alert("すべて登録済みの単語でした。");return;}
-      msg+="\n\n"+fresh.length+"件を追加しますか？";
-      if(!confirm(msg))return;
-      const merged=existing.concat(fresh);
-      saveItems(merged);
-      renderTable();
-      alert(fresh.length+"件の単語を追加しました。");
+      let addDesc="重複をスキップして追加";
+      if(dupes>0)addDesc=fresh.length+"件を追加（"+dupes+"件は登録済みのためスキップ）";
+      else addDesc=fresh.length+"件を既存リストに追加";
+      showModal(
+        '<div class="modal-overlay" id="modalBg">'
+        +'<div class="modal-box">'
+        +'<h3>CSV取り込み</h3>'
+        +'<p>CSVから <span class="highlight">'+rows.length+'件</span> の単語が見つかりました。<br>'
+        +'現在 <span class="highlight">'+existing.length+'件</span> の単語が登録されています。</p>'
+        +'<div class="modal-actions">'
+        +(fresh.length>0
+          ?'<button class="modal-btn modal-btn-add" id="modalAdd" type="button">'
+           +'<span class="modal-icon">＋</span>'
+           +'<span class="modal-text"><span class="modal-title">追加する</span>'
+           +'<span class="modal-desc">'+esc(addDesc)+'</span></span></button>'
+          :'')
+        +'<button class="modal-btn modal-btn-replace" id="modalReplace" type="button">'
+        +'<span class="modal-icon">↻</span>'
+        +'<span class="modal-text"><span class="modal-title">上書きする</span>'
+        +'<span class="modal-desc">既存の'+existing.length+'件を削除して'+rows.length+'件に置き換え</span></span></button>'
+        +'<button class="modal-btn modal-btn-cancel" id="modalCancel" type="button">キャンセル</button>'
+        +'</div>'
+        +(fresh.length===0?'<p style="margin-top:12px;font-size:13px;color:#dc2626;">※ すべて登録済みの単語です。追加する新しい単語はありません。</p>':'')
+        +'</div></div>'
+      );
+      $("modalCancel").onclick=closeModal;
+      $("modalBg").addEventListener("click",e=>{if(e.target.id==="modalBg")closeModal();});
+      if($("modalAdd"))$("modalAdd").onclick=function(){
+        saveItems(existing.concat(fresh));renderTable();closeModal();
+        showToast(fresh.length+"件の単語を追加しました");
+      };
+      $("modalReplace").onclick=function(){
+        closeModal();
+        showModal(
+          '<div class="modal-overlay" id="modalBg2">'
+          +'<div class="modal-box">'
+          +'<h3>本当に上書きしますか？</h3>'
+          +'<p>既存の <span class="highlight">'+existing.length+'件</span> はすべて削除され、'
+          +'CSVの <span class="highlight">'+rows.length+'件</span> に置き換わります。<br>この操作は元に戻せません。</p>'
+          +'<div class="modal-actions">'
+          +'<button class="modal-btn modal-btn-replace" id="modalConfirm" type="button">'
+          +'<span class="modal-icon">↻</span>'
+          +'<span class="modal-text"><span class="modal-title">上書きする</span></span></button>'
+          +'<button class="modal-btn modal-btn-cancel" id="modalCancel2" type="button">キャンセル</button>'
+          +'</div></div></div>'
+        );
+        $("modalCancel2").onclick=closeModal;
+        $("modalBg2").addEventListener("click",e=>{if(e.target.id==="modalBg2")closeModal();});
+        $("modalConfirm").onclick=function(){
+          saveItems(rows);renderTable();closeModal();
+          showToast(rows.length+"件の単語で上書きしました");
+        };
+      };
     };
     reader.readAsText(f,"utf-8");
   });
