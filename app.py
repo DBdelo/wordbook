@@ -14,9 +14,25 @@ from flask import Flask, Response, make_response, render_template_string, reques
 
 app = Flask(__name__)
 
-_DEFAULT_PRESET_DIR = os.path.normpath(
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "既存のwordbook")
-)
+_APP_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _candidate_preset_base_dirs() -> List[str]:
+    """よくある配置向けに、プリセットCSVのルート候補（既存のwordbook フォルダ）を列挙する。"""
+    return [
+        os.path.join(_APP_DIR, "既存のwordbook"),
+        os.path.join(_APP_DIR, "..", "既存のwordbook"),
+        os.path.join(_APP_DIR, "..", "wordbook", "既存のwordbook"),
+        os.path.join(_APP_DIR, "wordbook", "既存のwordbook"),
+    ]
+
+
+def _abs_norm(path: str) -> str:
+    return os.path.normpath(os.path.abspath(path))
+
+
+# 後方互換・参照用（実際の走査は都度 _pick_wordbook_preset_base() を使う）
+_DEFAULT_PRESET_DIR = _abs_norm(os.path.join(_APP_DIR, "..", "既存のwordbook"))
 WORDBOOK_PRESET_DIR = os.environ.get("WORDBOOK_PRESET_DIR", _DEFAULT_PRESET_DIR)
 
 
@@ -33,6 +49,31 @@ def _iter_preset_csv_rel_paths(base: str) -> List[str]:
             rel = os.path.relpath(full, base_real).replace("\\", "/")
             out.append(rel)
     return sorted(out)
+
+
+def _pick_wordbook_preset_base() -> str:
+    """
+    環境変数 WORDBOOK_PRESET_DIR があればそれのみ。
+    なければ候補ディレクトリのうち、CSVが1件でもある最初のルートを採用。
+    どれにもCSVがなければ、存在する最初の候補、なければ従来どおり app のひとつ上の 既存のwordbook。
+    """
+    env = (os.environ.get("WORDBOOK_PRESET_DIR") or "").strip()
+    if env:
+        return _abs_norm(env)
+    seen: List[str] = []
+    for c in _candidate_preset_base_dirs():
+        p = _abs_norm(c)
+        if p in seen:
+            continue
+        seen.append(p)
+        if not os.path.isdir(p):
+            continue
+        if _iter_preset_csv_rel_paths(p):
+            return p
+    for p in seen:
+        if os.path.isdir(p):
+            return p
+    return _abs_norm(os.path.join(_APP_DIR, "..", "既存のwordbook"))
 
 
 def _safe_preset_csv_path(base: str, rel: str) -> str | None:
@@ -453,6 +494,7 @@ HTML = r"""
   const $ = id => document.getElementById(id);
   const quizBookSelect=$("quizBookSource"),quizBookHint=$("quizBookHint"),storageNote=$("storageNote");
   let presetItems=[];
+  let presetCsvCount=null;
   function isPersonalQuizBook(){return !quizBookSelect||quizBookSelect.value==="personal";}
   function isPresetQuizBook(){return !!(quizBookSelect&&quizBookSelect.value.startsWith("preset:"));}
 
@@ -692,8 +734,10 @@ HTML = r"""
 
   function updateQuizBookHint(){
     if(!quizBookHint)return;
+    const noPreset=presetCsvCount===0;
     if(isPersonalQuizBook()){
-      quizBookHint.textContent="「あなたの単語帳」に登録した単語から出題します。";
+      quizBookHint.textContent="「あなたの単語帳」に登録した単語から出題します。"
+        +(noPreset?" サーバーの「既存のwordbook」内に.csvが見つかりません。サブフォルダ（例: EX準一級/）内も列挙します。フォルダ配置または環境変数 WORDBOOK_PRESET_DIR を確認してください。":"");
     }else{
       quizBookHint.textContent="選択したCSVから出題します。記録モードの一覧はあなたの単語帳のみです。";
     }
@@ -763,20 +807,26 @@ HTML = r"""
     refreshRecordEditor();
     renderTable();
     resetQuiz();
-    fetch("/api/preset-csv/list").then(r=>r.json()).then(d=>{
-      if(d&&d.ok&&Array.isArray(d.files)&&d.files.length){
-        groupFilesForOptgroups(d.files).forEach(([dir,list])=>{
-          const og=document.createElement("optgroup");
-          og.label=dir?dir:"（フォルダ直下）";
-          list.sort((a,b)=>a.name.localeCompare(b.name,"ja",{numeric:true})).forEach(f=>{
-            const opt=document.createElement("option");
-            opt.value="preset:"+f.rel;
-            opt.textContent=f.name.replace(/\.csv$/i,"");
-            og.appendChild(opt);
+    fetch("/api/preset-csv/list").then(r=>{
+      if(!r.ok)throw new Error("preset list "+r.status);
+      return r.json();
+    }).then(d=>{
+      if(d&&d.ok&&Array.isArray(d.files)){
+        presetCsvCount=d.files.length;
+        if(d.files.length){
+          groupFilesForOptgroups(d.files).forEach(([dir,list])=>{
+            const og=document.createElement("optgroup");
+            og.label=dir?dir:"（フォルダ直下）";
+            list.sort((a,b)=>a.name.localeCompare(b.name,"ja",{numeric:true})).forEach(f=>{
+              const opt=document.createElement("option");
+              opt.value="preset:"+f.rel;
+              opt.textContent=f.name.replace(/\.csv$/i,"");
+              og.appendChild(opt);
+            });
+            quizBookSelect.appendChild(og);
           });
-          quizBookSelect.appendChild(og);
-        });
-      }
+        }
+      }else{presetCsvCount=null;}
       let saved="";
       try{
         saved=localStorage.getItem(QBOOK_KEY)||"";
@@ -786,6 +836,7 @@ HTML = r"""
       else quizBookSelect.value="personal";
       onQuizBookChange();
     }).catch(()=>{
+      presetCsvCount=null;
       try{localStorage.setItem(QBOOK_KEY,"personal");}catch{}
       quizBookSelect.value="personal";
       presetItems=[];
@@ -1065,7 +1116,7 @@ def index():
 
 @app.get("/api/preset-csv/list")
 def preset_csv_list():
-    base = os.path.realpath(WORDBOOK_PRESET_DIR)
+    base = os.path.realpath(_pick_wordbook_preset_base())
     rels = _iter_preset_csv_rel_paths(base)
     files = [{"rel": r, "label": r.replace("/", " / ")} for r in rels]
     return Response(
@@ -1077,7 +1128,7 @@ def preset_csv_list():
 @app.get("/api/preset-csv/file")
 def preset_csv_file():
     rel = (request.args.get("path") or request.args.get("f") or "").strip()
-    base = os.path.realpath(WORDBOOK_PRESET_DIR)
+    base = os.path.realpath(_pick_wordbook_preset_base())
     path = _safe_preset_csv_path(base, rel)
     if not path:
         return Response(
