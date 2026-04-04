@@ -164,19 +164,27 @@ HTML = r"""
       padding:12px 20px 14px;z-index:90;
     }
     .quiz-source-strip-inner{
-      max-width:560px;margin:0 auto;
+      max-width:720px;margin:0 auto;
       display:flex;flex-direction:column;gap:8px;align-items:stretch;
     }
-    .quiz-source-strip-inner .quiz-source-row{
-      display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;
+    .quiz-source-heading{
+      font-size:13px;font-weight:800;color:#1e293b;margin:0 0 2px 0;
     }
-    .quiz-source-strip-inner label{
-      font-size:13px;font-weight:800;color:#1e293b;margin:0;flex-shrink:0;
+    .quiz-source-grid{
+      display:grid;grid-template-columns:1fr 1fr;gap:12px 16px;
+      align-items:end;width:100%;
     }
-    .quiz-source-strip-inner select#quizBookSource{
-      flex:1;min-width:min(100%,260px);max-width:100%;
+    .quiz-source-field{display:flex;flex-direction:column;gap:6px;min-width:0;}
+    .quiz-source-field label{
+      font-size:12px;font-weight:700;color:#475569;margin:0;
+    }
+    .quiz-source-strip-inner select.quiz-source-select{
+      width:100%;max-width:100%;
       padding:11px 12px;border:2px solid #cbd5e1;border-radius:10px;
       font-size:15px;font-weight:600;background:#fff;color:#0f172a;
+    }
+    .quiz-source-strip-inner select.quiz-source-select:disabled{
+      opacity:.65;cursor:not-allowed;background:#f1f5f9;
     }
     .quiz-book-hint{margin:0;font-size:12px;line-height:1.5;color:#475569;text-align:left;}
     .mode-tabs{display:flex;background:#e2e8f0;border-radius:10px;padding:3px;gap:2px;}
@@ -397,6 +405,7 @@ HTML = r"""
       .stat-badge{padding:5px 10px;font-size:13px;}
       .stat-badge .cnt{font-size:17px;}
       .shortcut-hint{display:none;}
+      .quiz-source-grid{grid-template-columns:1fr;}
     }
   </style>
 </head>
@@ -415,9 +424,16 @@ HTML = r"""
   <div id="quizView">
     <div class="quiz-source-strip" id="quizSourceStrip">
       <div class="quiz-source-strip-inner">
-        <div class="quiz-source-row">
-          <label for="quizBookSource">出題する単語帳</label>
-          <select id="quizBookSource" title="マイ単語帳か、サーバー上のCSVを選びます"></select>
+        <p class="quiz-source-heading">出題する単語帳</p>
+        <div class="quiz-source-grid">
+          <div class="quiz-source-field">
+            <label for="quizBookCategory">単語帳（フォルダ）</label>
+            <select id="quizBookCategory" class="quiz-source-select" title="マイ単語帳か、プリセットのフォルダを選びます"></select>
+          </div>
+          <div class="quiz-source-field">
+            <label for="quizBookFile">CSVファイル</label>
+            <select id="quizBookFile" class="quiz-source-select" title="フォルダ内のCSVを選びます" disabled></select>
+          </div>
         </div>
         <div class="quiz-book-hint" id="quizBookHint"></div>
       </div>
@@ -492,11 +508,89 @@ HTML = r"""
   const QBOOK_KEY_LEGACY = "wordbook_active_book_v1";
 
   const $ = id => document.getElementById(id);
-  const quizBookSelect=$("quizBookSource"),quizBookHint=$("quizBookHint"),storageNote=$("storageNote");
+  const quizBookCategory=$("quizBookCategory"),quizBookFile=$("quizBookFile"),quizBookHint=$("quizBookHint"),storageNote=$("storageNote");
   let presetItems=[];
   let presetCsvCount=null;
-  function isPersonalQuizBook(){return !quizBookSelect||quizBookSelect.value==="personal";}
-  function isPresetQuizBook(){return !!(quizBookSelect&&quizBookSelect.value.startsWith("preset:"));}
+  let presetFoldersData=null;
+  const PRESET_CAT_PREFIX="presetcat:";
+  const PRESET_ROOT_KEY="__root__";
+  function encodePresetCategory(dir){
+    return PRESET_CAT_PREFIX+encodeURIComponent(dir===""?PRESET_ROOT_KEY:dir);
+  }
+  function decodePresetCategory(v){
+    if(!v||!v.startsWith(PRESET_CAT_PREFIX))return null;
+    const raw=decodeURIComponent(v.slice(PRESET_CAT_PREFIX.length));
+    return raw===PRESET_ROOT_KEY?"":raw;
+  }
+  function getQuizBookStorageValue(){
+    if(!quizBookCategory||quizBookCategory.value==="personal")return "personal";
+    const fv=quizBookFile&&quizBookFile.value;
+    if(fv&&fv.startsWith("preset:"))return fv;
+    return "personal";
+  }
+  function isPersonalQuizBook(){return !quizBookCategory||quizBookCategory.value==="personal";}
+  function isPresetQuizBook(){
+    return !!(quizBookFile&&quizBookFile.value&&quizBookFile.value.startsWith("preset:"));
+  }
+  function rebuildFileSelectForCategory(){
+    if(!quizBookFile||!quizBookCategory)return;
+    quizBookFile.innerHTML="";
+    if(quizBookCategory.value==="personal"){
+      quizBookFile.disabled=true;
+      const o=document.createElement("option");
+      o.value="";o.textContent="（マイ単語帳）";
+      quizBookFile.appendChild(o);
+      return;
+    }
+    const dir=decodePresetCategory(quizBookCategory.value);
+    if(dir===null){
+      quizBookFile.disabled=true;
+      const o=document.createElement("option");
+      o.value="";o.textContent="—";
+      quizBookFile.appendChild(o);
+      return;
+    }
+    const list=(presetFoldersData&&presetFoldersData.get(dir))||[];
+    quizBookFile.disabled=list.length===0;
+    if(!list.length){
+      const o=document.createElement("option");
+      o.value="";o.textContent="CSVがありません";
+      quizBookFile.appendChild(o);
+      return;
+    }
+    list.slice().sort((a,b)=>a.name.localeCompare(b.name,"ja",{numeric:true})).forEach(f=>{
+      const o=document.createElement("option");
+      o.value="preset:"+f.rel;
+      o.textContent=f.name.replace(/\.csv$/i,"");
+      quizBookFile.appendChild(o);
+    });
+  }
+  function applySavedQuizBook(saved){
+    if(!quizBookCategory)return;
+    if(saved==="personal"||!saved){
+      quizBookCategory.value="personal";
+      rebuildFileSelectForCategory();
+      return;
+    }
+    if(saved.startsWith("preset:")){
+      const rel=saved.slice(7);
+      const slash=rel.lastIndexOf("/");
+      const dir=slash>=0?rel.slice(0,slash):"";
+      const catVal=encodePresetCategory(dir);
+      if([...quizBookCategory.options].some(o=>o.value===catVal)){
+        quizBookCategory.value=catVal;
+        rebuildFileSelectForCategory();
+        if([...quizBookFile.options].some(o=>o.value===saved))quizBookFile.value=saved;
+        else if(quizBookFile.options.length)quizBookFile.selectedIndex=0;
+      }else{
+        quizBookCategory.value="personal";
+        rebuildFileSelectForCategory();
+      }
+    }else{
+      quizBookCategory.value="personal";
+      rebuildFileSelectForCategory();
+    }
+  }
 
   /* ── Shared helpers ── */
   function loadItems(){
@@ -549,7 +643,7 @@ HTML = r"""
   async function loadPresetForQuiz(){
     if(isPersonalQuizBook()){presetItems=[];return true;}
     if(!isPresetQuizBook()){presetItems=[];return false;}
-    const rel=quizBookSelect.value.slice(7);
+    const rel=quizBookFile.value.slice(7);
     if(!rel){presetItems=[];return false;}
     try{
       const r=await fetch("/api/preset-csv/file?path="+encodeURIComponent(rel));
@@ -743,7 +837,7 @@ HTML = r"""
     }
   }
 
-  function saveQuizBookChoice(){try{localStorage.setItem(QBOOK_KEY,quizBookSelect.value||"personal");}catch{}}
+  function saveQuizBookChoice(){try{localStorage.setItem(QBOOK_KEY,getQuizBookStorageValue());}catch{}}
 
   function refreshRecordEditor(){
     wordEl.disabled=false;meaningEl.disabled=false;
@@ -798,11 +892,25 @@ HTML = r"""
   }
 
   function initQuizBookSelect(){
-    quizBookSelect.innerHTML="";
-    const o=document.createElement("option");
-    o.value="personal";o.textContent="あなたの単語帳";
-    quizBookSelect.appendChild(o);
-    quizBookSelect.addEventListener("change",onQuizBookChange);
+    if(!quizBookCategory||!quizBookFile)return;
+    quizBookCategory.innerHTML="";
+    const o0=document.createElement("option");
+    o0.value="personal";o0.textContent="あなたの単語帳";
+    quizBookCategory.appendChild(o0);
+    if(!quizBookCategory.dataset.bound){
+      quizBookCategory.dataset.bound="1";
+      quizBookCategory.addEventListener("change",()=>{
+        rebuildFileSelectForCategory();
+        saveQuizBookChoice();
+        void onQuizBookChange();
+      });
+      quizBookFile.addEventListener("change",()=>{
+        saveQuizBookChoice();
+        void onQuizBookChange();
+      });
+    }
+    presetFoldersData=new Map();
+    rebuildFileSelectForCategory();
     updateQuizBookHint();
     refreshRecordEditor();
     renderTable();
@@ -813,32 +921,31 @@ HTML = r"""
     }).then(d=>{
       if(d&&d.ok&&Array.isArray(d.files)){
         presetCsvCount=d.files.length;
+        presetFoldersData=new Map();
         if(d.files.length){
           groupFilesForOptgroups(d.files).forEach(([dir,list])=>{
-            const og=document.createElement("optgroup");
-            og.label=dir?dir:"（フォルダ直下）";
-            list.sort((a,b)=>a.name.localeCompare(b.name,"ja",{numeric:true})).forEach(f=>{
-              const opt=document.createElement("option");
-              opt.value="preset:"+f.rel;
-              opt.textContent=f.name.replace(/\.csv$/i,"");
-              og.appendChild(opt);
-            });
-            quizBookSelect.appendChild(og);
+            presetFoldersData.set(dir,list.slice());
+            const co=document.createElement("option");
+            co.value=encodePresetCategory(dir);
+            co.textContent=dir?dir:"（フォルダ直下）";
+            quizBookCategory.appendChild(co);
           });
         }
-      }else{presetCsvCount=null;}
+      }else{presetCsvCount=null;presetFoldersData=new Map();}
       let saved="";
       try{
         saved=localStorage.getItem(QBOOK_KEY)||"";
         if(!saved){saved=localStorage.getItem(QBOOK_KEY_LEGACY)||"personal";}
       }catch{}
-      if([...quizBookSelect.options].some(x=>x.value===saved))quizBookSelect.value=saved;
-      else quizBookSelect.value="personal";
-      onQuizBookChange();
+      applySavedQuizBook(saved);
+      saveQuizBookChoice();
+      void onQuizBookChange();
     }).catch(()=>{
       presetCsvCount=null;
+      presetFoldersData=new Map();
       try{localStorage.setItem(QBOOK_KEY,"personal");}catch{}
-      quizBookSelect.value="personal";
+      quizBookCategory.value="personal";
+      rebuildFileSelectForCategory();
       presetItems=[];
       updateQuizBookHint();
       refreshRecordEditor();
