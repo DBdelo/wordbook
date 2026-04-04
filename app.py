@@ -1,6 +1,7 @@
 # app.py
 from __future__ import annotations
 
+import csv
 import io
 import json
 import os
@@ -9,9 +10,82 @@ from typing import List, Dict, Tuple
 from urllib.parse import quote
 
 import requests
-from flask import Flask, Response, render_template_string, request
+from flask import Flask, Response, make_response, render_template_string, request
 
 app = Flask(__name__)
+
+_DEFAULT_PRESET_DIR = os.path.normpath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "既存のwordbook")
+)
+WORDBOOK_PRESET_DIR = os.environ.get("WORDBOOK_PRESET_DIR", _DEFAULT_PRESET_DIR)
+
+
+def _iter_preset_csv_rel_paths(base: str) -> List[str]:
+    if not base or not os.path.isdir(base):
+        return []
+    base_real = os.path.realpath(base)
+    out: List[str] = []
+    for root, _dirs, filenames in os.walk(base_real):
+        for fn in filenames:
+            if not fn.lower().endswith(".csv"):
+                continue
+            full = os.path.join(root, fn)
+            rel = os.path.relpath(full, base_real).replace("\\", "/")
+            out.append(rel)
+    return sorted(out)
+
+
+def _safe_preset_csv_path(base: str, rel: str) -> str | None:
+    if not base or not rel:
+        return None
+    base_real = os.path.realpath(base)
+    if not os.path.isdir(base_real):
+        return None
+    rel_norm = rel.replace("\\", "/").strip("/")
+    if not rel_norm or ".." in rel_norm.split("/"):
+        return None
+    parts = [p for p in rel_norm.split("/") if p and p != "."]
+    candidate = os.path.realpath(os.path.join(base_real, *parts))
+    if not candidate.startswith(base_real + os.sep):
+        return None
+    if not candidate.lower().endswith(".csv"):
+        return None
+    if not os.path.isfile(candidate):
+        return None
+    return candidate
+
+
+def _is_preset_csv_header(a: str, b: str) -> bool:
+    a_st = a.strip().lstrip("\ufeff")
+    b_st = b.strip()
+    if a_st == "英単語":
+        return True
+    al = a_st.lower()
+    bl = b_st.lower()
+    if al == "word" and "meaning" in bl:
+        return True
+    if al in ("english", "en") and ("japanese" in bl or "日本語" in b_st):
+        return True
+    return False
+
+
+def _parse_preset_csv_text(text: str) -> List[Dict[str, str]]:
+    rows: List[Dict[str, str]] = []
+    f = io.StringIO(text)
+    reader = csv.reader(f)
+    for i, row in enumerate(reader):
+        if len(row) < 2:
+            continue
+        a, b = row[0].strip().lstrip("\ufeff"), row[1].strip()
+        if not a or not b:
+            continue
+        if i == 0 and _is_preset_csv_header(a, b):
+            continue
+        if len(a) > 80 or len(b) > 200:
+            continue
+        rows.append({"word": a, "meaning": b})
+    return rows
+
 
 HTML = r"""
 <!doctype html>
@@ -19,6 +93,7 @@ HTML = r"""
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta http-equiv="Cache-Control" content="no-store, max-age=0" />
   <title>あなたの単語帳</title>
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
@@ -41,6 +116,28 @@ HTML = r"""
       position:sticky;top:0;z-index:100;
     }
     .navbar h1{font-size:18px;font-weight:800;color:#1e293b;letter-spacing:-.3px;}
+    .quiz-source-strip{
+      width:100%;background:rgba(255,255,255,.95);
+      border-bottom:1px solid rgba(0,0,0,.08);
+      box-shadow:0 4px 14px rgba(0,0,0,.04);
+      padding:12px 20px 14px;z-index:90;
+    }
+    .quiz-source-strip-inner{
+      max-width:560px;margin:0 auto;
+      display:flex;flex-direction:column;gap:8px;align-items:stretch;
+    }
+    .quiz-source-strip-inner .quiz-source-row{
+      display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;
+    }
+    .quiz-source-strip-inner label{
+      font-size:13px;font-weight:800;color:#1e293b;margin:0;flex-shrink:0;
+    }
+    .quiz-source-strip-inner select#quizBookSource{
+      flex:1;min-width:min(100%,260px);max-width:100%;
+      padding:11px 12px;border:2px solid #cbd5e1;border-radius:10px;
+      font-size:15px;font-weight:600;background:#fff;color:#0f172a;
+    }
+    .quiz-book-hint{margin:0;font-size:12px;line-height:1.5;color:#475569;text-align:left;}
     .mode-tabs{display:flex;background:#e2e8f0;border-radius:10px;padding:3px;gap:2px;}
     .mode-tab{
       padding:8px 18px;border-radius:8px;font-size:13px;font-weight:600;
@@ -195,7 +292,6 @@ HTML = r"""
     .wordtext{font-weight:600}
     .voicebox{margin-top:12px;display:grid;grid-template-columns:1fr;gap:8px;}
     .voicehint{color:#6b7280;font-size:12px}
-
     /* ── Autocomplete ── */
     .ac-wrap{position:relative;}
     .ac-list{
@@ -276,6 +372,15 @@ HTML = r"""
 
   <!-- ── Quiz View ── -->
   <div id="quizView">
+    <div class="quiz-source-strip" id="quizSourceStrip">
+      <div class="quiz-source-strip-inner">
+        <div class="quiz-source-row">
+          <label for="quizBookSource">出題する単語帳</label>
+          <select id="quizBookSource" title="マイ単語帳か、サーバー上のCSVを選びます"></select>
+        </div>
+        <div class="quiz-book-hint" id="quizBookHint"></div>
+      </div>
+    </div>
     <div class="quiz-container">
       <div class="quiz-header">
         <div class="quiz-lang-toggle">
@@ -325,7 +430,7 @@ HTML = r"""
           <div class="voicehint" id="voiceHint"></div>
         </div>
         <div class="hint" id="hint"></div>
-        <div class="muted">データはこのブラウザ内に保存されます。</div>
+        <div class="muted" id="storageNote">データはこのブラウザ内に保存されます。</div>
       </div>
       <div class="card">
         <table>
@@ -342,8 +447,14 @@ HTML = r"""
   const KEY  = "wordbook_items_v1";
   const VKEY = "wordbook_voice_v1_en";
   const LKEY = "wordbook_quiz_lang_v1";
+  const QBOOK_KEY = "wordbook_quiz_book_v1";
+  const QBOOK_KEY_LEGACY = "wordbook_active_book_v1";
 
   const $ = id => document.getElementById(id);
+  const quizBookSelect=$("quizBookSource"),quizBookHint=$("quizBookHint"),storageNote=$("storageNote");
+  let presetItems=[];
+  function isPersonalQuizBook(){return !quizBookSelect||quizBookSelect.value==="personal";}
+  function isPresetQuizBook(){return !!(quizBookSelect&&quizBookSelect.value.startsWith("preset:"));}
 
   /* ── Shared helpers ── */
   function loadItems(){
@@ -384,6 +495,8 @@ HTML = r"""
   if(canSpeak())window.speechSynthesis.onvoiceschanged=()=>{rebuildVoiceSelect();renderTable();};
   rebuildVoiceSelect();
 
+  const quizArea=$("quizArea");
+
   /* ═══════════════════════════════════════
      MODE MANAGEMENT
      ═══════════════════════════════════════ */
@@ -391,25 +504,46 @@ HTML = r"""
   const quizView=$("quizView"),recordView=$("recordView");
   let curMode="quiz";
 
-  function switchMode(m){
+  async function loadPresetForQuiz(){
+    if(isPersonalQuizBook()){presetItems=[];return true;}
+    if(!isPresetQuizBook()){presetItems=[];return false;}
+    const rel=quizBookSelect.value.slice(7);
+    if(!rel){presetItems=[];return false;}
+    try{
+      const r=await fetch("/api/preset-csv/file?path="+encodeURIComponent(rel));
+      const d=await r.json();
+      if(r.ok&&d&&d.ok&&Array.isArray(d.items)){
+        presetItems=d.items.filter(it=>it&&typeof it.word==="string"&&typeof it.meaning==="string");
+        return true;
+      }
+      presetItems=[];
+      return false;
+    }catch{presetItems=[];return false;}
+  }
+
+  async function switchMode(m){
     curMode=m;
     tabQuiz.classList.toggle("active",m==="quiz");
     tabRecord.classList.toggle("active",m==="record");
     if(m==="quiz"){
       quizView.style.display="block";recordView.style.display="none";
-      updateBg();resetQuiz();
+      updateBg();
+      if(isPresetQuizBook()){
+        quizArea.innerHTML='<div class="quiz-card"><div class="quiz-empty" style="color:#64748b">単語帳を読み込み中…</div></div>';
+        await loadPresetForQuiz();
+      }
+      resetQuiz();
     }else{
       quizView.style.display="none";recordView.style.display="block";
       document.body.className="mode-record";renderTable();
     }
   }
-  tabQuiz.addEventListener("click",()=>switchMode("quiz"));
-  tabRecord.addEventListener("click",()=>switchMode("record"));
+  tabQuiz.addEventListener("click",()=>{void switchMode("quiz");});
+  tabRecord.addEventListener("click",()=>{void switchMode("record");});
 
   /* ═══════════════════════════════════════
      QUIZ MODE
      ═══════════════════════════════════════ */
-  const quizArea=$("quizArea");
   const cntGood=$("cntGood"),cntBad=$("cntBad");
   const progBar=$("progBar"),progText=$("progText");
   const toggleEn=$("toggleEn"),toggleJa=$("toggleJa");
@@ -430,8 +564,13 @@ HTML = r"""
 
   function shuffle(a){const b=[...a];for(let i=b.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[b[i],b[j]]=[b[j],b[i]];}return b;}
 
+  function activeQuizItems(){
+    if(isPresetQuizBook())return presetItems;
+    return loadItems();
+  }
+
   function resetQuiz(){
-    queue=shuffle(loadItems());qIdx=0;good=0;bad=0;forgot=[];answered=false;
+    queue=shuffle(activeQuizItems().slice());qIdx=0;good=0;bad=0;forgot=[];answered=false;
     updateStats();renderQ();
   }
   function updateStats(){
@@ -442,14 +581,17 @@ HTML = r"""
   }
 
   function renderQ(){
-    const items=loadItems();
+    const items=activeQuizItems();
     if(items.length===0){
-      quizArea.innerHTML='<div class="quiz-card"><div class="quiz-empty">'
-        +'<div class="big-icon">📚</div>'
-        +'<p>単語がまだ登録されていません。</p>'
-        +'<p style="margin-top:8px">「記録モード」で単語を追加しましょう！</p>'
+      const isP=!isPresetQuizBook();
+      const msg=isP
+        ?'<p>あなたの単語帳に単語がありません。</p>'
+        +'<p style="margin-top:8px;font-size:14px">画面上部の<strong>出題する単語帳</strong>で、サーバー上のCSVを選ぶとその内容でテストできます。</p>'
+        +'<p style="margin-top:8px;font-size:14px">自分の単語で試す場合は「記録モード」で追加してください。</p>'
         +'<button class="qbtn qbtn-goto" type="button" id="qGoRecord" style="margin-top:18px">記録モードへ</button>'
-        +'</div></div>';
+        :'<p>このCSVに単語がありません。</p><p style="margin-top:8px">CSVの形式（英単語と意味の列）を確認するか、別のファイルを選んでください。</p>';
+      quizArea.innerHTML='<div class="quiz-card"><div class="quiz-empty">'
+        +'<div class="big-icon">📚</div>'+msg+'</div></div>';
       progText.textContent="";progBar.style.width="0%";
       return;
     }
@@ -516,7 +658,7 @@ HTML = r"""
     if(t.id==="qNext"){qIdx++;answered=false;updateStats();renderQ();}
     if(t.id==="qRestart"){resetQuiz();}
     if(t.id==="qRetry"){queue=shuffle(forgot);qIdx=0;good=0;bad=0;forgot=[];answered=false;updateStats();renderQ();}
-    if(t.id==="qGoRecord"){switchMode("record");}
+    if(t.id==="qGoRecord"){void switchMode("record");}
     if(t.id==="qSpeak"){
       const it=queue[qIdx];
       if(it)speakWord(it.word);
@@ -526,7 +668,7 @@ HTML = r"""
   document.addEventListener("keydown",e=>{
     if(curMode!=="quiz")return;
     if(document.activeElement&&(document.activeElement.tagName==="INPUT"||document.activeElement.tagName==="SELECT"||document.activeElement.tagName==="TEXTAREA"))return;
-    const items=loadItems();if(!items.length)return;
+    const items=activeQuizItems();if(!items.length)return;
     if(qIdx>=queue.length)return;
 
     if(!answered){
@@ -541,10 +683,31 @@ HTML = r"""
      RECORD MODE (existing logic preserved)
      ═══════════════════════════════════════ */
   const tbody=$("tbody"),form=$("addForm"),wordEl=$("word"),meaningEl=$("meaning");
-  const btnCsv=$("btnCsv"),btnPdf=$("btnPdf"),btnClear=$("btnClear"),hint=$("hint");
+  const btnCsv=$("btnCsv"),btnPdf=$("btnPdf"),btnClear=$("btnClear"),btnImport=$("btnImport"),hint=$("hint");
+  const csvFile=$("csvFile");
+  const submitBtn=form.querySelector('button[type="submit"]');
   let lastQ="",debT=null,inflight=null;
 
   function setHint(s){hint.textContent=s||"";}
+
+  function updateQuizBookHint(){
+    if(!quizBookHint)return;
+    if(isPersonalQuizBook()){
+      quizBookHint.textContent="「あなたの単語帳」に登録した単語から出題します。";
+    }else{
+      quizBookHint.textContent="選択したCSVから出題します。記録モードの一覧はあなたの単語帳のみです。";
+    }
+  }
+
+  function saveQuizBookChoice(){try{localStorage.setItem(QBOOK_KEY,quizBookSelect.value||"personal");}catch{}}
+
+  function refreshRecordEditor(){
+    wordEl.disabled=false;meaningEl.disabled=false;
+    if(submitBtn)submitBtn.disabled=false;
+    btnImport.disabled=false;btnClear.disabled=false;
+    acClose();
+    if(storageNote)storageNote.style.display="";
+  }
 
   function renderTable(){
     const items=loadItems();
@@ -555,6 +718,82 @@ HTML = r"""
       +'<span class="wordtext">'+esc(it.word)+'</span></div></td>'
       +'<td>'+esc(it.meaning)+'</td>'
       +'<td><button class="del" type="button" data-del="'+i+'">削除</button></td></tr>').join("");
+  }
+
+  function groupFilesForOptgroups(files){
+    const m=new Map();
+    files.forEach(f=>{
+      const rel=f.rel;
+      const slash=rel.lastIndexOf("/");
+      const dir=slash>=0?rel.slice(0,slash):"";
+      const name=slash>=0?rel.slice(slash+1):rel;
+      const key=dir||"\0ROOT";
+      if(!m.has(key))m.set(key,[]);
+      m.get(key).push({rel,name});
+    });
+    const keys=[...m.keys()].sort((a,b)=>{
+      if(a==="\0ROOT")return -1;if(b==="\0ROOT")return 1;
+      return a.localeCompare(b,"ja");
+    });
+    return keys.map(k=>[k==="\0ROOT"?"":k,m.get(k)]);
+  }
+
+  async function onQuizBookChange(){
+    saveQuizBookChoice();
+    updateQuizBookHint();
+    if(isPersonalQuizBook()){
+      presetItems=[];
+      resetQuiz();
+      return;
+    }
+    if(curMode==="quiz"){
+      quizArea.innerHTML='<div class="quiz-card"><div class="quiz-empty" style="color:#64748b">読み込み中…</div></div>';
+    }
+    await loadPresetForQuiz();
+    resetQuiz();
+  }
+
+  function initQuizBookSelect(){
+    quizBookSelect.innerHTML="";
+    const o=document.createElement("option");
+    o.value="personal";o.textContent="あなたの単語帳";
+    quizBookSelect.appendChild(o);
+    quizBookSelect.addEventListener("change",onQuizBookChange);
+    updateQuizBookHint();
+    refreshRecordEditor();
+    renderTable();
+    resetQuiz();
+    fetch("/api/preset-csv/list").then(r=>r.json()).then(d=>{
+      if(d&&d.ok&&Array.isArray(d.files)&&d.files.length){
+        groupFilesForOptgroups(d.files).forEach(([dir,list])=>{
+          const og=document.createElement("optgroup");
+          og.label=dir?dir:"（フォルダ直下）";
+          list.sort((a,b)=>a.name.localeCompare(b.name,"ja",{numeric:true})).forEach(f=>{
+            const opt=document.createElement("option");
+            opt.value="preset:"+f.rel;
+            opt.textContent=f.name.replace(/\.csv$/i,"");
+            og.appendChild(opt);
+          });
+          quizBookSelect.appendChild(og);
+        });
+      }
+      let saved="";
+      try{
+        saved=localStorage.getItem(QBOOK_KEY)||"";
+        if(!saved){saved=localStorage.getItem(QBOOK_KEY_LEGACY)||"personal";}
+      }catch{}
+      if([...quizBookSelect.options].some(x=>x.value===saved))quizBookSelect.value=saved;
+      else quizBookSelect.value="personal";
+      onQuizBookChange();
+    }).catch(()=>{
+      try{localStorage.setItem(QBOOK_KEY,"personal");}catch{}
+      quizBookSelect.value="personal";
+      presetItems=[];
+      updateQuizBookHint();
+      refreshRecordEditor();
+      renderTable();
+      resetQuiz();
+    });
   }
 
   async function doLookup(w){
@@ -637,7 +876,8 @@ HTML = r"""
   document.addEventListener("click",e=>{if(!e.target.closest(".ac-wrap"))acClose();});
 
   form.addEventListener("submit",e=>{
-    e.preventDefault();const w=wordEl.value.trim(),m=meaningEl.value.trim();if(!w||!m)return;
+    e.preventDefault();
+    const w=wordEl.value.trim(),m=meaningEl.value.trim();if(!w||!m)return;
     const items=loadItems();items.push({word:w,meaning:m});saveItems(items);
     wordEl.value="";meaningEl.value="";lastQ="";setHint("");wordEl.focus();renderTable();
   });
@@ -650,11 +890,11 @@ HTML = r"""
     if(Number.isInteger(i)&&i>=0&&i<items.length){items.splice(i,1);saveItems(items);renderTable();}
   });
 
-  btnClear.addEventListener("click",()=>{if(!confirm("全ての単語を削除しますか？"))return;saveItems([]);renderTable();});
+  btnClear.addEventListener("click",()=>{
+    if(!confirm("全ての単語を削除しますか？"))return;saveItems([]);renderTable();
+  });
 
   /* ── CSV Import ── */
-  const btnImport=$("btnImport"),csvFile=$("csvFile");
-
   btnImport.addEventListener("click",()=>{csvFile.value="";csvFile.click();});
 
   const modalRoot=$("modalRoot");
@@ -682,8 +922,10 @@ HTML = r"""
       if(!rows.length){showToast("読み込める単語がありませんでした");return;}
       const existing=loadItems();
       if(existing.length===0){
-        saveItems(rows);renderTable();
-        showToast(rows.length+"件の単語を追加しました");return;
+        saveItems(rows);
+        renderTable();
+        showToast(rows.length+"件をあなたの単語帳に追加しました");
+        return;
       }
       const existSet=new Set(existing.map(x=>x.word.toLowerCase()));
       const fresh=rows.filter(r=>!existSet.has(r.word.toLowerCase()));
@@ -716,8 +958,10 @@ HTML = r"""
       $("modalCancel").onclick=closeModal;
       $("modalBg").addEventListener("click",e=>{if(e.target.id==="modalBg")closeModal();});
       if($("modalAdd"))$("modalAdd").onclick=function(){
-        saveItems(existing.concat(fresh));renderTable();closeModal();
-        showToast(fresh.length+"件の単語を追加しました");
+        saveItems(existing.concat(fresh));
+        renderTable();
+        closeModal();
+        showToast(fresh.length+"件をあなたの単語帳に追加しました");
       };
       $("modalReplace").onclick=function(){
         closeModal();
@@ -737,8 +981,10 @@ HTML = r"""
         $("modalCancel2").onclick=closeModal;
         $("modalBg2").addEventListener("click",e=>{if(e.target.id==="modalBg2")closeModal();});
         $("modalConfirm").onclick=function(){
-          saveItems(rows);renderTable();closeModal();
-          showToast(rows.length+"件の単語で上書きしました");
+          saveItems(rows);
+          renderTable();
+          closeModal();
+          showToast(rows.length+"件であなたの単語帳を上書きしました");
         };
       };
     };
@@ -786,7 +1032,8 @@ HTML = r"""
       const w=String(it.word).replaceAll('"','""'),m=String(it.meaning).replaceAll('"','""');return '"'+w+'","'+m+'"';
     }));
     const csv=bom+lines.join("\r\n");const blob=new Blob([csv],{type:"text/csv;charset=utf-8"});
-    const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download="wordbook.csv";
+    const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;
+    a.download="wordbook.csv";
     document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);
   });
 
@@ -795,13 +1042,14 @@ HTML = r"""
     const r=await fetch("/export.pdf",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({items})});
     if(!r.ok){alert("PDF出力に失敗しました");return;}
     const blob=await r.blob();const url=URL.createObjectURL(blob);
-    const a=document.createElement("a");a.href=url;a.download="wordbook.pdf";
+    const a=document.createElement("a");a.href=url;
+    a.download="wordbook.pdf";
     document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);
   });
 
   /* ── Boot ── */
-  renderTable();
-  switchMode("quiz");
+  initQuizBookSelect();
+  void switchMode("quiz");
 })();
 </script>
 </body>
@@ -810,7 +1058,48 @@ HTML = r"""
 
 @app.get("/")
 def index():
-    return render_template_string(HTML)
+    resp = make_response(render_template_string(HTML))
+    resp.headers["Cache-Control"] = "no-store, max-age=0"
+    return resp
+
+
+@app.get("/api/preset-csv/list")
+def preset_csv_list():
+    base = os.path.realpath(WORDBOOK_PRESET_DIR)
+    rels = _iter_preset_csv_rel_paths(base)
+    files = [{"rel": r, "label": r.replace("/", " / ")} for r in rels]
+    return Response(
+        json.dumps({"ok": True, "files": files}, ensure_ascii=False),
+        mimetype="application/json",
+    )
+
+
+@app.get("/api/preset-csv/file")
+def preset_csv_file():
+    rel = (request.args.get("path") or request.args.get("f") or "").strip()
+    base = os.path.realpath(WORDBOOK_PRESET_DIR)
+    path = _safe_preset_csv_path(base, rel)
+    if not path:
+        return Response(
+            json.dumps({"ok": False, "error": "not_found"}, ensure_ascii=False),
+            status=404,
+            mimetype="application/json",
+        )
+    try:
+        with open(path, "rb") as fh:
+            raw = fh.read()
+    except OSError:
+        return Response(
+            json.dumps({"ok": False, "error": "read_error"}, ensure_ascii=False),
+            status=500,
+            mimetype="application/json",
+        )
+    text = raw.decode("utf-8-sig", errors="replace")
+    items = _parse_preset_csv_text(text)
+    return Response(
+        json.dumps({"ok": True, "rel": rel, "items": items}, ensure_ascii=False),
+        mimetype="application/json",
+    )
 
 
 def _draw_pdf_word_sheet(rows: List[Dict[str, str]]) -> bytes:
